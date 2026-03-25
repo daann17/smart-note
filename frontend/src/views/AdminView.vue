@@ -1,5 +1,15 @@
 <script setup lang="ts">
-import { ArrowLeftOutlined, ReloadOutlined, SafetyCertificateOutlined, TeamOutlined, UserOutlined } from '@ant-design/icons-vue';
+import {
+  ArrowLeftOutlined,
+  DatabaseOutlined,
+  FileTextOutlined,
+  HddOutlined,
+  InboxOutlined,
+  ReloadOutlined,
+  SafetyCertificateOutlined,
+  TeamOutlined,
+  UserOutlined,
+} from '@ant-design/icons-vue';
 import { message } from 'ant-design-vue';
 import { computed, onMounted, reactive, ref } from 'vue';
 import { useRouter } from 'vue-router';
@@ -16,6 +26,14 @@ type AdminOverview = {
   totalTags: number;
 };
 
+type AdminStorageOverview = {
+  totalKnowledgeBytes: number;
+  totalHistoryBytes: number;
+  totalUploadBytes: number;
+  totalEstimatedBytes: number;
+  uploadFileCount: number;
+};
+
 type AdminUser = {
   id: number;
   username: string;
@@ -30,16 +48,33 @@ type AdminUser = {
   tagCount: number;
 };
 
+type AdminUserStorage = {
+  userId: number;
+  username: string;
+  nickname: string | null;
+  noteCount: number;
+  historyCount: number;
+  noteBytes: number;
+  historyBytes: number;
+  totalBytes: number;
+};
+
 type UserStatusFilter = 'all' | 'active' | 'inactive';
 type UserRoleFilter = 'all' | 'USER' | 'ADMIN';
 
 const router = useRouter();
 const currentUsername = localStorage.getItem('username') || '';
+
 const overviewLoading = ref(true);
 const userLoading = ref(true);
+const storageOverviewLoading = ref(true);
+const storageUserLoading = ref(true);
 const refreshing = ref(false);
+
 const users = ref<AdminUser[]>([]);
+const storageUsers = ref<AdminUserStorage[]>([]);
 const actionLoading = reactive<Record<string, boolean>>({});
+
 const filters = reactive<{
   keyword: string;
   status: UserStatusFilter;
@@ -60,40 +95,32 @@ const overview = ref<AdminOverview>({
   totalTags: 0,
 });
 
-const columns = [
-  {
-    title: '用户',
-    key: 'user',
-    dataIndex: 'username',
-  },
-  {
-    title: '角色',
-    key: 'role',
-    dataIndex: 'role',
-  },
-  {
-    title: '状态',
-    key: 'active',
-    dataIndex: 'active',
-  },
-  {
-    title: '知识资产',
-    key: 'assets',
-  },
-  {
-    title: '创建时间',
-    key: 'createdAt',
-    dataIndex: 'createdAt',
-  },
-  {
-    title: '最近更新',
-    key: 'updatedAt',
-    dataIndex: 'updatedAt',
-  },
-  {
-    title: '操作',
-    key: 'actions',
-  },
+const storageOverview = ref<AdminStorageOverview>({
+  totalKnowledgeBytes: 0,
+  totalHistoryBytes: 0,
+  totalUploadBytes: 0,
+  totalEstimatedBytes: 0,
+  uploadFileCount: 0,
+});
+
+const userColumns = [
+  { title: '用户', key: 'user', dataIndex: 'username' },
+  { title: '角色', key: 'role', dataIndex: 'role' },
+  { title: '状态', key: 'active', dataIndex: 'active' },
+  { title: '知识资产', key: 'assets' },
+  { title: '创建时间', key: 'createdAt', dataIndex: 'createdAt' },
+  { title: '最近更新', key: 'updatedAt', dataIndex: 'updatedAt' },
+  { title: '操作', key: 'actions' },
+];
+
+const storageColumns = [
+  { title: '用户', key: 'user' },
+  { title: '笔记数', key: 'noteCount', dataIndex: 'noteCount' },
+  { title: '历史版本', key: 'historyCount', dataIndex: 'historyCount' },
+  { title: '正文占用', key: 'noteBytes' },
+  { title: '历史占用', key: 'historyBytes' },
+  { title: '总占用', key: 'totalBytes' },
+  { title: '占比', key: 'share' },
 ];
 
 const summaryCards = computed(() => ([
@@ -101,7 +128,7 @@ const summaryCards = computed(() => ([
     key: 'totalUsers',
     label: '总用户数',
     value: overview.value.totalUsers,
-    hint: '系统中的账号总量',
+    hint: '系统内已注册账号总量',
     tone: 'blue',
     icon: TeamOutlined,
   },
@@ -117,7 +144,7 @@ const summaryCards = computed(() => ([
     key: 'adminUsers',
     label: '管理员',
     value: overview.value.adminUsers,
-    hint: '具备系统管理权限',
+    hint: '具备后台管理权限',
     tone: 'gold',
     icon: SafetyCertificateOutlined,
   },
@@ -131,11 +158,47 @@ const summaryCards = computed(() => ([
   },
 ]));
 
-const formatDateTime = (value?: string) => {
-  if (!value) {
-    return '--';
-  }
+const storageCards = computed(() => ([
+  {
+    key: 'knowledge',
+    label: '笔记正文占用',
+    value: formatBytes(storageOverview.value.totalKnowledgeBytes),
+    hint: '统计标题、Markdown、HTML 与摘要',
+    tone: 'blue',
+    icon: FileTextOutlined,
+  },
+  {
+    key: 'history',
+    label: '历史版本占用',
+    value: formatBytes(storageOverview.value.totalHistoryBytes),
+    hint: '所有历史快照累计估算',
+    tone: 'green',
+    icon: DatabaseOutlined,
+  },
+  {
+    key: 'upload',
+    label: '上传目录占用',
+    value: formatBytes(storageOverview.value.totalUploadBytes),
+    hint: `${storageOverview.value.uploadFileCount} 个上传文件`,
+    tone: 'gold',
+    icon: InboxOutlined,
+  },
+  {
+    key: 'total',
+    label: '系统总占用',
+    value: formatBytes(storageOverview.value.totalEstimatedBytes),
+    hint: '知识数据与上传文件合计',
+    tone: 'teal',
+    icon: HddOutlined,
+  },
+]));
 
+const managedKnowledgeBytes = computed(
+  () => storageOverview.value.totalKnowledgeBytes + storageOverview.value.totalHistoryBytes,
+);
+
+const formatDateTime = (value?: string) => {
+  if (!value) return '--';
   return new Date(value).toLocaleString('zh-CN', {
     year: 'numeric',
     month: '2-digit',
@@ -143,6 +206,27 @@ const formatDateTime = (value?: string) => {
     hour: '2-digit',
     minute: '2-digit',
   });
+};
+
+const formatBytes = (value?: number) => {
+  const bytes = Number(value || 0);
+  if (bytes < 1024) return `${bytes} B`;
+
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let size = bytes / 1024;
+  let unitIndex = 0;
+
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+
+  return `${size.toFixed(size >= 10 || unitIndex === 0 ? 1 : 2)} ${units[unitIndex]}`;
+};
+
+const getStorageShare = (bytes: number) => {
+  if (managedKnowledgeBytes.value <= 0) return 0;
+  return Number(((bytes / managedKnowledgeBytes.value) * 100).toFixed(1));
 };
 
 const setActionLoading = (key: string, value: boolean) => {
@@ -162,6 +246,10 @@ const buildUserQuery = () => ({
   role: filters.role,
 });
 
+const buildStorageQuery = () => ({
+  keyword: filters.keyword.trim() || undefined,
+});
+
 const handleAdminAccessError = (error: any) => {
   if (error?.response?.status === 403) {
     message.error('当前账号没有管理员权限');
@@ -173,9 +261,7 @@ const handleAdminAccessError = (error: any) => {
 };
 
 const loadOverview = async (silent = false) => {
-  if (!silent) {
-    overviewLoading.value = true;
-  }
+  if (!silent) overviewLoading.value = true;
 
   try {
     const response = await api.get<AdminOverview>('/admin/overview');
@@ -189,10 +275,23 @@ const loadOverview = async (silent = false) => {
   }
 };
 
-const loadUsers = async (silent = false) => {
-  if (!silent) {
-    userLoading.value = true;
+const loadStorageOverview = async (silent = false) => {
+  if (!silent) storageOverviewLoading.value = true;
+
+  try {
+    const response = await api.get<AdminStorageOverview>('/admin/storage/overview');
+    storageOverview.value = response.data;
+  } catch (error: any) {
+    if (!handleAdminAccessError(error)) {
+      message.error(error.response?.data?.message || '存储概览加载失败');
+    }
+  } finally {
+    storageOverviewLoading.value = false;
   }
+};
+
+const loadUsers = async (silent = false) => {
+  if (!silent) userLoading.value = true;
 
   try {
     const response = await api.get<AdminUser[]>('/admin/users', {
@@ -208,20 +307,46 @@ const loadUsers = async (silent = false) => {
   }
 };
 
+const loadStorageUsers = async (silent = false) => {
+  if (!silent) storageUserLoading.value = true;
+
+  try {
+    const response = await api.get<AdminUserStorage[]>('/admin/storage/users', {
+      params: buildStorageQuery(),
+    });
+    storageUsers.value = response.data;
+  } catch (error: any) {
+    if (!handleAdminAccessError(error)) {
+      message.error(error.response?.data?.message || '用户存储统计加载失败');
+    }
+  } finally {
+    storageUserLoading.value = false;
+  }
+};
+
 const refreshAll = async () => {
   refreshing.value = true;
   await Promise.allSettled([
     loadOverview(true),
+    loadStorageOverview(true),
     loadUsers(true),
+    loadStorageUsers(true),
   ]);
   refreshing.value = false;
+};
+
+const applyFilters = async () => {
+  await Promise.allSettled([
+    loadUsers(),
+    loadStorageUsers(),
+  ]);
 };
 
 const resetFilters = async () => {
   filters.keyword = '';
   filters.status = 'all';
   filters.role = 'all';
-  await loadUsers();
+  await applyFilters();
 };
 
 const syncUser = (nextUser: AdminUser) => {
@@ -247,9 +372,7 @@ const handleToggleUserStatus = async (user: AdminUser, active: boolean) => {
 };
 
 const handleChangeUserRole = async (user: AdminUser, role: AdminUser['role']) => {
-  if (user.role === role) {
-    return;
-  }
+  if (user.role === role) return;
 
   const loadingKey = `role-${user.id}`;
   setActionLoading(loadingKey, true);
@@ -284,7 +407,9 @@ onMounted(async () => {
 
   await Promise.allSettled([
     loadOverview(),
+    loadStorageOverview(),
     loadUsers(),
+    loadStorageUsers(),
   ]);
 });
 </script>
@@ -302,7 +427,7 @@ onMounted(async () => {
           <p class="eyebrow">Admin Console</p>
           <h1>管理员中心</h1>
           <p class="header-copy">
-            统一查看系统账号、知识资产与权限状态，并对用户进行启用、停用与角色调整。
+            统一查看系统账号、知识资产与存储占用情况，并对用户进行启用、停用与角色调整。
           </p>
         </div>
       </div>
@@ -335,6 +460,79 @@ onMounted(async () => {
     <section class="panel">
       <div class="panel-head">
         <div>
+          <h2>存储统计</h2>
+          <p>按笔记正文、历史版本和上传目录估算系统占用，并展示用户侧的知识数据排行。</p>
+        </div>
+        <span class="result-count">当前 {{ storageUsers.length }} 位用户</span>
+      </div>
+
+      <div class="storage-card-grid">
+        <a-card
+          v-for="card in storageCards"
+          :key="card.key"
+          class="storage-card"
+          :class="`tone-${card.tone}`"
+          :loading="storageOverviewLoading"
+        >
+          <div class="summary-icon">
+            <component :is="card.icon" />
+          </div>
+          <div class="summary-body">
+            <span>{{ card.label }}</span>
+            <strong>{{ card.value }}</strong>
+            <small>{{ card.hint }}</small>
+          </div>
+        </a-card>
+      </div>
+
+      <a-table
+        class="storage-table"
+        :columns="storageColumns"
+        :data-source="storageUsers"
+        :loading="storageUserLoading"
+        :pagination="{ pageSize: 8, showSizeChanger: false }"
+        row-key="userId"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'user'">
+            <div class="user-cell">
+              <div class="user-avatar">{{ (record.nickname || record.username).slice(0, 1).toUpperCase() }}</div>
+              <div>
+                <strong>{{ record.nickname || record.username }}</strong>
+                <div class="sub-line">@{{ record.username }}</div>
+              </div>
+            </div>
+          </template>
+
+          <template v-else-if="column.key === 'noteBytes'">
+            <span>{{ formatBytes(record.noteBytes) }}</span>
+          </template>
+
+          <template v-else-if="column.key === 'historyBytes'">
+            <span>{{ formatBytes(record.historyBytes) }}</span>
+          </template>
+
+          <template v-else-if="column.key === 'totalBytes'">
+            <strong class="storage-total">{{ formatBytes(record.totalBytes) }}</strong>
+          </template>
+
+          <template v-else-if="column.key === 'share'">
+            <div class="share-cell">
+              <a-progress :percent="getStorageShare(record.totalBytes)" size="small" :show-info="false" />
+              <span>{{ getStorageShare(record.totalBytes).toFixed(1) }}%</span>
+            </div>
+          </template>
+        </template>
+      </a-table>
+
+      <p class="storage-footnote">
+        上传目录当前按系统总量统计，尚未精确归属到单个用户；用户排行仅统计笔记正文与历史版本数据。
+      </p>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <div>
           <h2>用户管理</h2>
           <p>支持按关键词、角色与状态筛选，并直接调整账号状态。</p>
         </div>
@@ -347,24 +545,24 @@ onMounted(async () => {
           allow-clear
           class="toolbar-search"
           placeholder="搜索用户名、邮箱或昵称"
-          @pressEnter="loadUsers()"
+          @pressEnter="applyFilters"
         />
-        <a-select v-model:value="filters.status" class="toolbar-select" @change="loadUsers()">
+        <a-select v-model:value="filters.status" class="toolbar-select" @change="applyFilters">
           <a-select-option value="all">全部状态</a-select-option>
           <a-select-option value="active">仅启用</a-select-option>
           <a-select-option value="inactive">仅停用</a-select-option>
         </a-select>
-        <a-select v-model:value="filters.role" class="toolbar-select" @change="loadUsers()">
+        <a-select v-model:value="filters.role" class="toolbar-select" @change="applyFilters">
           <a-select-option value="all">全部角色</a-select-option>
           <a-select-option value="ADMIN">管理员</a-select-option>
           <a-select-option value="USER">普通用户</a-select-option>
         </a-select>
-        <a-button type="primary" @click="loadUsers()">查询</a-button>
+        <a-button type="primary" @click="applyFilters">查询</a-button>
         <a-button @click="resetFilters">重置</a-button>
       </div>
 
       <a-table
-        :columns="columns"
+        :columns="userColumns"
         :data-source="users"
         :loading="userLoading"
         :pagination="{ pageSize: 8, showSizeChanger: false }"
@@ -479,7 +677,7 @@ onMounted(async () => {
 
 .header-copy {
   margin: 0;
-  max-width: 720px;
+  max-width: 760px;
   color: #475569;
   line-height: 1.7;
 }
@@ -491,13 +689,15 @@ onMounted(async () => {
   margin-bottom: 20px;
 }
 
-.summary-card {
+.summary-card,
+.storage-card {
   border-radius: 22px;
   border: 1px solid rgba(148, 163, 184, 0.16);
   box-shadow: 0 18px 38px rgba(15, 23, 42, 0.06);
 }
 
-.summary-card :deep(.ant-card-body) {
+.summary-card :deep(.ant-card-body),
+.storage-card :deep(.ant-card-body) {
   display: flex;
   gap: 14px;
   align-items: center;
@@ -565,6 +765,10 @@ onMounted(async () => {
   backdrop-filter: blur(14px);
 }
 
+.panel + .panel {
+  margin-top: 20px;
+}
+
 .panel-head {
   display: flex;
   align-items: flex-start;
@@ -597,6 +801,35 @@ onMounted(async () => {
   color: #334155;
   font-size: 13px;
   font-weight: 700;
+}
+
+.storage-card-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.storage-table {
+  margin-top: 4px;
+}
+
+.storage-total {
+  color: #0f172a;
+}
+
+.storage-footnote {
+  margin: 12px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.share-cell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
 }
 
 .toolbar {
@@ -658,7 +891,8 @@ onMounted(async () => {
 }
 
 @media (max-width: 1180px) {
-  .summary-grid {
+  .summary-grid,
+  .storage-card-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -673,7 +907,8 @@ onMounted(async () => {
     flex-direction: column;
   }
 
-  .summary-grid {
+  .summary-grid,
+  .storage-card-grid {
     grid-template-columns: 1fr;
   }
 

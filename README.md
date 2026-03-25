@@ -31,7 +31,16 @@ cd backend
 mvn spring-boot:run
 ```
 
-For local or server deployment, prefer putting secrets in `backend/.env` and starting with:
+For local or server deployment, prefer putting secrets in `backend/.env`.
+
+Windows PowerShell:
+
+```powershell
+cd backend
+.\start.ps1
+```
+
+Linux/macOS:
 
 ```bash
 cd backend
@@ -52,7 +61,7 @@ npm run dev
 Default addresses:
 
 - Frontend: `http://localhost:5173`
-- Backend: `http://localhost:8080`
+- Backend: `http://localhost:8081`
 
 ## Verification
 

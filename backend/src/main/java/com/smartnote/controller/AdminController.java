@@ -1,6 +1,8 @@
 package com.smartnote.controller;
 
 import com.smartnote.dto.AdminOverviewResponse;
+import com.smartnote.dto.AdminStorageOverviewResponse;
+import com.smartnote.dto.AdminUserStorageResponse;
 import com.smartnote.dto.AdminUserSummaryResponse;
 import com.smartnote.dto.UpdateAdminUserRoleRequest;
 import com.smartnote.dto.UpdateAdminUserStatusRequest;
@@ -33,6 +35,11 @@ public class AdminController {
         return ResponseEntity.ok(adminService.getOverview());
     }
 
+    @GetMapping("/storage/overview")
+    public ResponseEntity<AdminStorageOverviewResponse> getStorageOverview() {
+        return ResponseEntity.ok(adminService.getStorageOverview());
+    }
+
     @GetMapping("/users")
     public ResponseEntity<?> listUsers(
             @RequestParam(required = false) String keyword,
@@ -41,6 +48,16 @@ public class AdminController {
     ) {
         try {
             List<AdminUserSummaryResponse> users = adminService.listUsers(keyword, status, role);
+            return ResponseEntity.ok(users);
+        } catch (IllegalArgumentException exception) {
+            return ResponseEntity.badRequest().body(Map.of("message", exception.getMessage()));
+        }
+    }
+
+    @GetMapping("/storage/users")
+    public ResponseEntity<?> listUserStorage(@RequestParam(required = false) String keyword) {
+        try {
+            List<AdminUserStorageResponse> users = adminService.listUserStorage(keyword);
             return ResponseEntity.ok(users);
         } catch (IllegalArgumentException exception) {
             return ResponseEntity.badRequest().body(Map.of("message", exception.getMessage()));
