@@ -27,6 +27,15 @@ public class NoteComment {
     @Column(name = "author_name", nullable = false, length = 50)
     private String authorName;
 
+    @Column(name = "parent_comment_id")
+    private Long parentCommentId;
+
+    @Column(name = "is_author_comment")
+    private Boolean authorComment = false;
+
+    @Column(name = "owner_token", length = 64)
+    private String ownerToken;
+
     @Column(name = "anchor_key", length = 120)
     private String anchorKey;
 
@@ -38,6 +47,15 @@ public class NoteComment {
 
     @Column(name = "anchor_preview", length = 300)
     private String anchorPreview;
+
+    @Column(name = "is_resolved")
+    private Boolean resolved = false;
+
+    @Column(name = "resolved_at")
+    private LocalDateTime resolvedAt;
+
+    @Column(name = "resolved_by", length = 50)
+    private String resolvedBy;
 
     @CreatedDate
     @Column(name = "created_at", nullable = false, updatable = false)

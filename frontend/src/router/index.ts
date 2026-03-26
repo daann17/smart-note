@@ -42,6 +42,13 @@ const router = createRouter({
       meta: { requiresAuth: true, requiresAdmin: true },
     },
     {
+      path: '/notebook/:notebookId/note/:noteId/comments',
+      alias: '/notebook/:notebookId/note/:noteId/share-comments',
+      name: 'comments',
+      component: () => import('../views/ShareCommentsView.vue'),
+      meta: { requiresAuth: true },
+    },
+    {
       path: '/notebook/:notebookId',
       name: 'notebook',
       component: () => import('../views/NoteView.vue'),

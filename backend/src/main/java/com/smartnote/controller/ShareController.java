@@ -1,6 +1,7 @@
 package com.smartnote.controller;
 
-import com.smartnote.dto.ShareCommentResponse;
+import com.smartnote.dto.ShareCommentRequest;
+import com.smartnote.dto.ShareCommentResolveRequest;
 import com.smartnote.entity.NoteComment;
 import com.smartnote.entity.NoteShare;
 import com.smartnote.service.ShareService;
@@ -10,13 +11,13 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/shares")
@@ -85,29 +86,41 @@ public class ShareController {
 
     @GetMapping("/note/{noteId}/comments")
     public ResponseEntity<?> getShareComments(@PathVariable Long noteId) {
-        List<ShareCommentResponse> comments = shareService.getShareCommentsByNoteId(noteId)
-                .stream()
-                .map(this::toCommentResponse)
-                .collect(Collectors.toList());
-        return ResponseEntity.ok(comments);
+        return ResponseEntity.ok(shareService.getShareCommentsByNoteId(noteId));
+    }
+
+    @PostMapping("/note/{noteId}/comments")
+    public ResponseEntity<?> createOwnerComment(
+            @PathVariable Long noteId,
+            @RequestBody ShareCommentRequest request
+    ) {
+        NoteComment comment = shareService.createOwnerComment(noteId, request);
+        return ResponseEntity.ok(shareService.toCommentResponse(comment));
+    }
+
+    @PutMapping("/note/{noteId}/comments/{commentId}/resolve")
+    public ResponseEntity<?> updateCommentResolvedStatus(
+            @PathVariable Long noteId,
+            @PathVariable Long commentId,
+            @RequestBody(required = false) ShareCommentResolveRequest request
+    ) {
+        boolean resolved = request != null && Boolean.TRUE.equals(request.getResolved());
+        NoteComment comment = shareService.updateCommentResolvedStatus(noteId, commentId, resolved);
+        return ResponseEntity.ok(shareService.toCommentResponse(comment));
+    }
+
+    @DeleteMapping("/note/{noteId}/comments/{commentId}")
+    public ResponseEntity<?> deleteShareComment(
+            @PathVariable Long noteId,
+            @PathVariable Long commentId
+    ) {
+        shareService.deleteShareComment(noteId, commentId);
+        return ResponseEntity.ok(Map.of("message", "Comment deleted"));
     }
 
     @DeleteMapping("/note/{noteId}")
     public ResponseEntity<?> disableShare(@PathVariable Long noteId) {
         shareService.disableShare(noteId);
-        return ResponseEntity.ok(Map.of("message", "分享已关闭"));
-    }
-
-    private ShareCommentResponse toCommentResponse(NoteComment comment) {
-        return new ShareCommentResponse(
-                comment.getId(),
-                comment.getContent(),
-                comment.getAuthorName(),
-                comment.getAnchorKey(),
-                comment.getAnchorType(),
-                comment.getAnchorLabel(),
-                comment.getAnchorPreview(),
-                comment.getCreatedAt()
-        );
+        return ResponseEntity.ok(Map.of("message", "Share disabled"));
     }
 }

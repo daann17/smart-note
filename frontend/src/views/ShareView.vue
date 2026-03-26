@@ -1,10 +1,14 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { message } from 'ant-design-vue';
+import { message, Modal } from 'ant-design-vue';
 import { LockOutlined, LoginOutlined, MessageOutlined, PushpinOutlined, SaveOutlined } from '@ant-design/icons-vue';
 import api from '../api';
 import MarkdownEditor from '../components/MarkdownEditor.vue';
+import { decorateShareContent, type ShareAnchor } from '../utils/shareAnchors';
+import type { ShareComment } from '../stores/note';
+import { collectShareAnchorCommentCounts, countShareCommentMessages } from '../utils/shareComments';
+import { getOrCreateShareCommentOwnerToken } from '../utils/shareCommentOwnership';
 
 type ShareNote = {
   noteId: number;
@@ -19,32 +23,12 @@ type ShareNote = {
   shareId: number;
 };
 
-type ShareComment = {
-  id: number;
-  content: string;
-  authorName: string;
-  createdAt: string;
-  anchorKey: string | null;
-  anchorType: string | null;
-  anchorLabel: string | null;
-  anchorPreview: string | null;
-};
-
-type ShareAnchorType = 'heading' | 'paragraph' | 'list' | 'quote' | 'code';
-
-type ShareAnchor = {
-  key: string;
-  type: ShareAnchorType;
-  label: string;
-  preview: string;
-  commentCount: number;
-};
-
 const route = useRoute();
 const router = useRouter();
 const token = route.params.token as string;
-const shareEditorUser = localStorage.getItem('displayName') || localStorage.getItem('username') || '协作者';
-const anchorSelector = 'h1,h2,h3,h4,h5,h6,p,li,blockquote,pre';
+const commentOwnerToken = getOrCreateShareCommentOwnerToken(token);
+const shareEditorUser =
+  localStorage.getItem('displayName') || localStorage.getItem('username') || '\u534f\u4f5c\u8005';
 
 const loading = ref(true);
 const note = ref<ShareNote | null>(null);
@@ -58,6 +42,13 @@ const newCommentContent = ref('');
 const newCommentAuthor = ref('');
 const submittingComment = ref(false);
 const activeAnchor = ref<ShareAnchor | null>(null);
+const previewContentRef = ref<HTMLElement | null>(null);
+const readonlyContentRef = ref<HTMLElement | null>(null);
+const activeReplyCommentId = ref<number | null>(null);
+const replySubmittingId = ref<number | null>(null);
+const deleteCommentId = ref<number | null>(null);
+const replyContentDrafts = ref<Record<number, string>>({});
+const replyAuthorDrafts = ref<Record<number, string>>({});
 
 const lastSavedTime = ref('');
 const isSaving = ref(false);
@@ -67,122 +58,17 @@ const isAuthenticated = computed(() => Boolean(localStorage.getItem('token')));
 const canCollaborate = computed(() => Boolean(note.value?.allowEdit && isAuthenticated.value));
 const needsLoginForCollab = computed(() => Boolean(note.value?.allowEdit && !isAuthenticated.value));
 
-const hashString = (value: string) => {
-  let hash = 0;
+const commentCountMap = computed(() => collectShareAnchorCommentCounts(comments.value));
+const commentMessageCount = computed(() => countShareCommentMessages(comments.value));
 
-  for (let index = 0; index < value.length; index += 1) {
-    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
-  }
-
-  return hash.toString(36);
-};
-
-const normalizeAnchorText = (value: string) => value.replace(/\s+/g, ' ').trim();
-
-const getAnchorType = (tagName: string): ShareAnchorType => {
-  if (/^h[1-6]$/i.test(tagName)) return 'heading';
-  if (tagName === 'li') return 'list';
-  if (tagName === 'blockquote') return 'quote';
-  if (tagName === 'pre') return 'code';
-  return 'paragraph';
-};
-
-const getAnchorLabel = (type: ShareAnchorType, preview: string) => {
-  if (type === 'heading') return `标题：${preview}`;
-  if (type === 'list') return `列表项：${preview}`;
-  if (type === 'quote') return `引用：${preview}`;
-  if (type === 'code') return `代码块：${preview}`;
-  return `段落：${preview}`;
-};
-
-const commentCountMap = computed(() => {
-  const counts = new Map<string, number>();
-
-  for (const comment of comments.value) {
-    if (!comment.anchorKey) {
-      continue;
-    }
-
-    counts.set(comment.anchorKey, (counts.get(comment.anchorKey) || 0) + 1);
-  }
-
-  return counts;
-});
-
-const decoratedDocument = computed(() => {
-  const sourceHtml = note.value?.contentHtml?.trim();
-  if (!sourceHtml || typeof DOMParser === 'undefined') {
-    return {
-      html: note.value?.contentHtml || '<p><i>暂无内容</i></p>',
-      anchors: [] as ShareAnchor[],
-    };
-  }
-
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(`<div data-share-root="1">${sourceHtml}</div>`, 'text/html');
-  const root = doc.body.firstElementChild as HTMLElement | null;
-
-  if (!root) {
-    return {
-      html: sourceHtml,
-      anchors: [] as ShareAnchor[],
-    };
-  }
-
-  const occurrenceMap = new Map<string, number>();
-  const anchors: ShareAnchor[] = [];
-
-  root.querySelectorAll(anchorSelector).forEach((element) => {
-    const parentAnchor = element.parentElement?.closest(anchorSelector);
-    if (parentAnchor) {
-      return;
-    }
-
-    const tagName = element.tagName.toLowerCase();
-    const text = normalizeAnchorText(element.textContent || '');
-    if (!text) {
-      return;
-    }
-
-    const preview = text.slice(0, 120);
-    const occurrenceSeed = `${tagName}|${preview.toLowerCase()}`;
-    const occurrence = (occurrenceMap.get(occurrenceSeed) || 0) + 1;
-    occurrenceMap.set(occurrenceSeed, occurrence);
-
-    const key = `${tagName}-${hashString(`${occurrenceSeed}|${occurrence}`)}`;
-    const type = getAnchorType(tagName);
-    const label = getAnchorLabel(type, preview);
-    const commentCount = commentCountMap.value.get(key) || 0;
-
-    element.classList.add('share-anchor-block');
-    element.setAttribute('id', `anchor-${key}`);
-    element.setAttribute('data-share-anchor-key', key);
-    element.setAttribute('data-share-anchor-label', label);
-    element.setAttribute('data-share-anchor-type', type);
-
-    if (commentCount > 0) {
-      element.classList.add('has-comments');
-      element.setAttribute('data-comment-count-label', `${commentCount} 条评论`);
-    }
-
-    if (activeAnchor.value?.key === key) {
-      element.classList.add('is-active');
-    }
-
-    anchors.push({
-      key,
-      type,
-      label,
-      preview,
-      commentCount,
-    });
-  });
-
-  return {
-    html: root.innerHTML,
-    anchors,
-  };
-});
+const decoratedDocument = computed(() =>
+  decorateShareContent({
+    contentHtml: note.value?.contentHtml,
+    activeAnchorKey: activeAnchor.value?.key || null,
+    commentCountByKey: commentCountMap.value,
+    anchorIdPrefix: 'share-anchor',
+  }),
+);
 
 const decoratedContentHtml = computed(() => decoratedDocument.value.html);
 const availableAnchors = computed(() => decoratedDocument.value.anchors);
@@ -205,15 +91,45 @@ const commentAnchorState = computed(() => {
   return states;
 });
 
-const commentInputTitle = computed(() => {
-  if (!activeAnchor.value) {
-    return '发表评论';
-  }
-
-  return '发表评论到当前段落';
-});
+const commentInputTitle = computed(() => (
+  activeAnchor.value
+    ? '\u53d1\u8868\u8bc4\u8bba\u5230\u5f53\u524d\u6bb5\u843d'
+    : '\u53d1\u8868\u8bc4\u8bba'
+));
 
 const activeAnchorSummary = computed(() => activeAnchor.value?.label || '');
+const activeAnchorPreviewText = computed(() => activeAnchor.value?.preview || '');
+
+const canDeleteComment = (comment: ShareComment) => {
+  if (!comment.viewerCanDelete) {
+    return false;
+  }
+
+  if (comment.parentCommentId !== null) {
+    return true;
+  }
+
+  return comment.replies.every((reply) => reply.viewerCanDelete);
+};
+
+const getInteractiveAnchorRoots = () => (
+  [previewContentRef.value, readonlyContentRef.value].filter(Boolean) as HTMLElement[]
+);
+
+const syncActiveAnchorHighlight = (anchorKey: string | null) => {
+  for (const root of getInteractiveAnchorRoots()) {
+    const anchorBlocks = root.querySelectorAll<HTMLElement>('[data-share-anchor-key]');
+
+    anchorBlocks.forEach((element) => {
+      element.classList.toggle('is-active', Boolean(anchorKey) && element.dataset.shareAnchorKey === anchorKey);
+    });
+  }
+};
+
+const clearActiveAnchor = () => {
+  activeAnchor.value = null;
+  syncActiveAnchorHighlight(null);
+};
 
 const handleGoLogin = () => {
   router.push({
@@ -226,13 +142,14 @@ const handleGoLogin = () => {
 
 const scrollToAnchor = async (anchorKey: string) => {
   await nextTick();
-  const target = document.getElementById(`anchor-${anchorKey}`);
+  const target = document.getElementById(`share-anchor-${anchorKey}`);
   if (!target) {
-    message.warning('原段落已变更，暂时无法定位');
+    message.warning('\u539f\u6bb5\u843d\u5df2\u53d8\u66f4\uff0c\u6682\u65f6\u65e0\u6cd5\u5b9a\u4f4d');
     return;
   }
 
   activeAnchor.value = availableAnchors.value.find((anchor) => anchor.key === anchorKey) || null;
+  syncActiveAnchorHighlight(anchorKey);
   target.scrollIntoView({ behavior: 'smooth', block: 'center' });
 };
 
@@ -242,21 +159,23 @@ const handleAnchorClick = (event: MouseEvent) => {
   }
 
   const target = event.target as HTMLElement | null;
-  const linkTarget = target?.closest('a');
-  if (linkTarget) {
+  if (target?.closest('a')) {
     return;
   }
 
   const anchorElement = target?.closest<HTMLElement>('[data-share-anchor-key]');
-  if (!anchorElement) {
-    return;
-  }
-
-  const anchorKey = anchorElement.dataset.shareAnchorKey;
+  const anchorKey = anchorElement?.dataset.shareAnchorKey;
   if (!anchorKey) {
     return;
   }
 
+  if (activeAnchor.value?.key === anchorKey) {
+    activeAnchor.value = null;
+    syncActiveAnchorHighlight(null);
+    return;
+  }
+
+  syncActiveAnchorHighlight(anchorKey);
   activeAnchor.value = availableAnchors.value.find((anchor) => anchor.key === anchorKey) || null;
 };
 
@@ -280,14 +199,17 @@ const handleSave = async (isAutoSave = false) => {
     note.value.updatedAt = response.data.updatedAt;
 
     const now = new Date();
-    lastSavedTime.value = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
+    lastSavedTime.value = `${now.getHours().toString().padStart(2, '0')}:${now
+      .getMinutes()
+      .toString()
+      .padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}`;
 
     if (!isAutoSave) {
-      message.success('保存成功');
+      message.success('\u4fdd\u5b58\u6210\u529f');
     }
   } catch (err: any) {
     if (!isAutoSave) {
-      message.error(err.response?.data?.message || '保存失败');
+      message.error(err.response?.data?.message || '\u4fdd\u5b58\u5931\u8d25');
     }
   } finally {
     isSaving.value = false;
@@ -318,32 +240,47 @@ watch(
   },
 );
 
-watch(availableAnchors, (anchors) => {
-  if (!activeAnchor.value) {
-    return;
-  }
+watch(
+  availableAnchors,
+  (anchors) => {
+    if (!activeAnchor.value) {
+      return;
+    }
 
-  const matchedAnchor = anchors.find((anchor) => anchor.key === activeAnchor.value?.key) || null;
-  activeAnchor.value = matchedAnchor;
-}, { immediate: true });
+    activeAnchor.value = anchors.find((anchor) => anchor.key === activeAnchor.value?.key) || null;
+  },
+  { immediate: true },
+);
+
+watch(
+  () => activeAnchor.value?.key || null,
+  async (anchorKey) => {
+    await nextTick();
+    syncActiveAnchorHighlight(anchorKey);
+  },
+  { immediate: true },
+);
 
 const fetchComments = async () => {
   try {
     const response = await api.get<ShareComment[]>(`/public/shares/${token}/comments`, {
-      params: extractionCode.value ? { code: extractionCode.value } : undefined,
+      params: {
+        ...(extractionCode.value ? { code: extractionCode.value } : {}),
+        ownerToken: commentOwnerToken,
+      },
     });
     comments.value = response.data;
   } catch (err: any) {
     console.error('Failed to fetch comments', err);
     if (err.response?.status === 403) {
-      message.error(err.response?.data?.message || '无法加载评论');
+      message.error(err.response?.data?.message || '\u65e0\u6cd5\u52a0\u8f7d\u8bc4\u8bba');
     }
   }
 };
 
 const submitComment = async () => {
   if (!newCommentContent.value.trim()) {
-    message.warning('评论内容不能为空');
+    message.warning('\u8bc4\u8bba\u5185\u5bb9\u4e0d\u80fd\u4e3a\u7a7a');
     return;
   }
 
@@ -351,22 +288,117 @@ const submitComment = async () => {
   try {
     await api.post(`/public/shares/${token}/comments`, {
       content: newCommentContent.value.trim(),
-      authorName: newCommentAuthor.value.trim() || '匿名用户',
+      authorName: newCommentAuthor.value.trim() || '\u533f\u540d\u7528\u6237',
       code: extractionCode.value || undefined,
+      ownerToken: commentOwnerToken,
       anchorKey: activeAnchor.value?.key || undefined,
       anchorType: activeAnchor.value?.type || undefined,
       anchorLabel: activeAnchor.value?.label || undefined,
       anchorPreview: activeAnchor.value?.preview || undefined,
     });
 
-    message.success(activeAnchor.value ? '段落评论已发布' : '评论成功');
+    message.success(
+      activeAnchor.value ? '\u6bb5\u843d\u8bc4\u8bba\u5df2\u53d1\u5e03' : '\u8bc4\u8bba\u6210\u529f',
+    );
     newCommentContent.value = '';
     await fetchComments();
   } catch (err: any) {
-    message.error(err.response?.data?.message || '评论失败');
+    message.error(err.response?.data?.message || '\u8bc4\u8bba\u5931\u8d25');
   } finally {
     submittingComment.value = false;
   }
+};
+
+const toggleReplyEditor = (comment: ShareComment) => {
+  if (activeReplyCommentId.value === comment.id) {
+    activeReplyCommentId.value = null;
+    return;
+  }
+
+  activeReplyCommentId.value = comment.id;
+  replyContentDrafts.value[comment.id] ||= '';
+  replyAuthorDrafts.value[comment.id] ||= newCommentAuthor.value.trim();
+};
+
+const resetReplyDraft = (commentId: number) => {
+  activeReplyCommentId.value = activeReplyCommentId.value === commentId ? null : activeReplyCommentId.value;
+  delete replyContentDrafts.value[commentId];
+  delete replyAuthorDrafts.value[commentId];
+};
+
+const submitReply = async (comment: ShareComment) => {
+  const content = replyContentDrafts.value[comment.id]?.trim();
+  if (!content) {
+    message.warning('回复内容不能为空');
+    return;
+  }
+
+  replySubmittingId.value = comment.id;
+  try {
+    await api.post(`/public/shares/${token}/comments`, {
+      content,
+      authorName: replyAuthorDrafts.value[comment.id]?.trim() || '\u533f\u540d\u7528\u6237',
+      code: extractionCode.value || undefined,
+      ownerToken: commentOwnerToken,
+      parentCommentId: comment.id,
+    });
+
+    message.success('回复已发送');
+    resetReplyDraft(comment.id);
+    await fetchComments();
+  } catch (err: any) {
+    message.error(err.response?.data?.message || '\u56de\u590d\u5931\u8d25');
+  } finally {
+    replySubmittingId.value = null;
+  }
+};
+
+const handleDeleteComment = (comment: ShareComment) => {
+  if (deleteCommentId.value === comment.id) {
+    return;
+  }
+
+  const isReply = comment.parentCommentId !== null;
+  const hasForeignReplies = comment.parentCommentId === null && comment.replies.some((reply) => !reply.viewerCanDelete);
+
+  if (hasForeignReplies) {
+    Modal.info({
+      title: '删除这条评论？',
+      content: '这条评论已有他人的回复，当前不能直接删除。',
+      okText: '知道了',
+    });
+    return;
+  }
+
+  Modal.confirm({
+    title: isReply ? '删除这条回复？' : '删除这条评论？',
+    content: '删除后无法恢复。',
+    okText: '删除',
+    okType: 'danger',
+    cancelText: '取消',
+    onOk: async () => {
+      deleteCommentId.value = comment.id;
+      try {
+        await api.delete(`/public/shares/${token}/comments/${comment.id}`, {
+          params: {
+            ...(extractionCode.value ? { code: extractionCode.value } : {}),
+            ownerToken: commentOwnerToken,
+          },
+        });
+
+        if (activeReplyCommentId.value === comment.id) {
+          resetReplyDraft(comment.id);
+        }
+
+        await fetchComments();
+        message.success(isReply ? '回复已删除' : '评论已删除');
+      } catch (err: any) {
+        message.error(err.response?.data?.message || '删除失败');
+      } finally {
+        deleteCommentId.value = null;
+      }
+    },
+  });
 };
 
 const fetchNoteContent = async (code?: string) => {
@@ -381,6 +413,7 @@ const fetchNoteContent = async (code?: string) => {
     });
     note.value = response.data;
     requireCode.value = false;
+    activeAnchor.value = null;
 
     if (note.value.title) {
       document.title = `${note.value.title} - SmartNote`;
@@ -391,9 +424,11 @@ const fetchNoteContent = async (code?: string) => {
     }
   } catch (err: any) {
     if (err.response?.status === 403) {
-      message.error(err.response?.data?.message || '提取码错误');
+      message.error(err.response?.data?.message || '\u63d0\u53d6\u7801\u9519\u8bef');
     } else {
-      error.value = err.response?.data?.message || '无法获取分享内容，链接可能已失效';
+      error.value =
+        err.response?.data?.message ||
+        '\u65e0\u6cd5\u83b7\u53d6\u5206\u4eab\u5185\u5bb9\uff0c\u94fe\u63a5\u53ef\u80fd\u5df2\u5931\u6548';
       message.error(error.value);
     }
   } finally {
@@ -414,7 +449,9 @@ const checkShareInfo = async () => {
       await fetchNoteContent();
     }
   } catch (err: any) {
-    error.value = err.response?.data?.message || '无法获取分享内容，链接可能已失效';
+    error.value =
+      err.response?.data?.message ||
+      '\u65e0\u6cd5\u83b7\u53d6\u5206\u4eab\u5185\u5bb9\uff0c\u94fe\u63a5\u53ef\u80fd\u5df2\u5931\u6548';
     message.error(error.value);
     loading.value = false;
   }
@@ -434,7 +471,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="share-container">
+    <div class="share-container">
     <div v-if="loading" class="loading-state">
       <a-spin size="large" tip="正在加载分享内容..." />
     </div>
@@ -498,7 +535,9 @@ onUnmounted(() => {
       </div>
 
       <div v-if="canCollaborate" class="editor-area-wrapper">
-        <div class="editor-tip">当前分享已开启协同编辑，登录用户可实时协作；下方预览区支持段落定位评论。</div>
+        <div class="editor-tip">
+          当前分享已开启协同编辑，登录用户可实时协作；下方预览区支持段落定位评论。
+        </div>
         <div class="editor-container">
           <MarkdownEditor
             v-model="note.content"
@@ -519,6 +558,7 @@ onUnmounted(() => {
             <a-tag color="blue">{{ availableAnchors.length }} 个可评论段落</a-tag>
           </div>
           <div
+            ref="previewContentRef"
             class="markdown-body content-area interactive-content anchor-preview"
             v-html="decoratedContentHtml"
             @click="handleAnchorClick"
@@ -541,10 +581,25 @@ onUnmounted(() => {
         </a-alert>
 
         <div
+          ref="readonlyContentRef"
           class="markdown-body content-area interactive-content"
           v-html="decoratedContentHtml"
           @click="handleAnchorClick"
         ></div>
+      </div>
+
+      <div v-if="note.allowComment && activeAnchor" class="anchor-selection-banner">
+        <div class="anchor-selection-main">
+          <PushpinOutlined class="anchor-selection-icon" />
+          <div class="anchor-selection-copy">
+            <strong>已选中评论位置</strong>
+            <span>{{ activeAnchorSummary }}</span>
+            <small>{{ activeAnchorPreviewText }}</small>
+          </div>
+        </div>
+        <button type="button" class="anchor-selection-clear" @click="clearActiveAnchor">
+          改为全文评论
+        </button>
       </div>
 
       <div v-if="note.allowComment" class="comments-section">
@@ -553,7 +608,7 @@ onUnmounted(() => {
             <h3 class="comments-title">评论协作</h3>
             <p class="comments-subtitle">支持全文评论，也支持挂到具体段落、标题或列表项上。</p>
           </div>
-          <a-tag color="processing">{{ comments.length }} 条评论</a-tag>
+          <a-tag color="processing">{{ commentMessageCount }} 条留言</a-tag>
         </div>
 
         <div class="comment-input-area">
@@ -566,7 +621,7 @@ onUnmounted(() => {
             <div v-if="activeAnchor" class="active-anchor-chip">
               <PushpinOutlined />
               <span>{{ activeAnchorSummary }}</span>
-              <button type="button" class="clear-anchor-btn" @click="activeAnchor = null">改为全文评论</button>
+              <button type="button" class="clear-anchor-btn" @click="clearActiveAnchor">改为全文评论</button>
             </div>
             <span v-else class="comment-mode-hint">未选中段落时，默认发表评论到整篇笔记。</span>
           </div>
@@ -582,19 +637,18 @@ onUnmounted(() => {
             :rows="4"
           />
           <div class="comment-actions">
-            <span class="comment-tip">
-              点击文档中的段落后再发表评论，可以形成段落级评论。
-            </span>
+            <span class="comment-tip">点击文档中的段落后再发表评论，可以形成段落级评论。</span>
             <a-button type="primary" :loading="submittingComment" @click="submitComment">发表评论</a-button>
           </div>
         </div>
 
         <div class="comments-list">
           <a-empty v-if="comments.length === 0" description="暂无评论，来留下第一条吧" />
-          <div v-for="comment in comments" :key="comment.id" class="comment-item">
+          <div v-for="comment in comments" :key="comment.id" class="comment-item" :class="{ resolved: comment.resolved }">
             <div class="comment-header">
               <div class="comment-header-main">
                 <span class="comment-author">{{ comment.authorName }}</span>
+                <a-tag v-if="comment.authorComment" color="gold">作者</a-tag>
                 <span class="comment-time">{{ new Date(comment.createdAt).toLocaleString() }}</span>
               </div>
 
@@ -610,10 +664,93 @@ onUnmounted(() => {
               <a-tag v-else color="default">全文评论</a-tag>
             </div>
 
+            <div class="comment-status-row">
+              <a-tag :color="comment.resolved ? 'success' : 'processing'">
+                {{ comment.resolved ? '已解决' : '待处理' }}
+              </a-tag>
+              <span v-if="comment.resolved && comment.resolvedAt" class="comment-resolved-meta">
+                {{ comment.resolvedBy || '作者' }} 于 {{ new Date(comment.resolvedAt).toLocaleString() }} 标记
+              </span>
+            </div>
+
             <div v-if="comment.anchorPreview" class="comment-anchor-preview">
               {{ comment.anchorPreview }}
             </div>
             <div class="comment-content">{{ comment.content }}</div>
+
+            <div class="comment-thread-actions">
+              <button
+                type="button"
+                class="comment-reply-btn"
+                :class="{ active: activeReplyCommentId === comment.id }"
+                :disabled="deleteCommentId === comment.id"
+                @click="toggleReplyEditor(comment)"
+              >
+                {{ activeReplyCommentId === comment.id ? '取消回复' : '回复这条评论' }}
+              </button>
+              <button
+                v-if="comment.viewerCanDelete"
+                type="button"
+                class="comment-delete-btn"
+                :class="{ blocked: !canDeleteComment(comment) }"
+                :disabled="deleteCommentId === comment.id"
+                :title="canDeleteComment(comment) ? '删除这条评论' : '这条评论下已有他人的回复，暂时不能直接删除'"
+                @click="handleDeleteComment(comment)"
+              >
+                {{ deleteCommentId === comment.id ? '删除中...' : '删除' }}
+              </button>
+              <span v-if="comment.replies.length > 0" class="comment-reply-count">
+                {{ comment.replies.length }} 条回复
+              </span>
+            </div>
+
+            <div v-if="comment.replies.length > 0" class="comment-replies">
+              <div v-for="reply in comment.replies" :key="reply.id" class="comment-reply-item">
+                <div class="comment-header">
+                  <div class="comment-header-main">
+                    <span class="comment-author">{{ reply.authorName }}</span>
+                    <a-tag v-if="reply.authorComment" color="gold">作者</a-tag>
+                    <span class="comment-time">{{ new Date(reply.createdAt).toLocaleString() }}</span>
+                  </div>
+                  <button
+                    v-if="reply.viewerCanDelete"
+                    type="button"
+                    class="comment-delete-btn"
+                    :disabled="deleteCommentId === reply.id"
+                    @click="handleDeleteComment(reply)"
+                  >
+                    {{ deleteCommentId === reply.id ? '删除中...' : '删除' }}
+                  </button>
+                </div>
+                <div class="comment-content">{{ reply.content }}</div>
+              </div>
+            </div>
+
+            <div v-if="activeReplyCommentId === comment.id" class="comment-reply-editor">
+              <a-input
+                v-model:value="replyAuthorDrafts[comment.id]"
+                placeholder="你的称呼（可选）"
+                class="author-input"
+              />
+              <a-textarea
+                v-model:value="replyContentDrafts[comment.id]"
+                placeholder="补充说明或直接回复这条评论..."
+                :rows="3"
+              />
+              <div class="comment-actions reply-actions">
+                <span class="comment-tip">回复会继续挂在当前评论对应的位置下。</span>
+                <div class="reply-action-buttons">
+                  <a-button @click="resetReplyDraft(comment.id)">取消</a-button>
+                  <a-button
+                    type="primary"
+                    :loading="replySubmittingId === comment.id"
+                    @click="submitReply(comment)"
+                  >
+                    发送回复
+                  </a-button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -811,9 +948,87 @@ onUnmounted(() => {
 }
 
 .interactive-content :deep(.share-anchor-block.is-active) {
-  background: rgba(219, 234, 254, 0.82);
-  border-color: rgba(37, 99, 235, 0.28);
-  box-shadow: inset 0 0 0 1px rgba(37, 99, 235, 0.12);
+  background: linear-gradient(90deg, rgba(219, 234, 254, 0.96) 0%, rgba(239, 246, 255, 0.92) 100%);
+  border-color: rgba(37, 99, 235, 0.34);
+  box-shadow:
+    inset 4px 0 0 #2563eb,
+    0 12px 26px rgba(37, 99, 235, 0.12);
+}
+
+.interactive-content :deep(.share-anchor-block.is-active)::before {
+  position: absolute;
+  left: 12px;
+  top: -11px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.4;
+  box-shadow: 0 10px 18px rgba(37, 99, 235, 0.18);
+}
+
+.anchor-selection-banner {
+  margin-top: 20px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  border: 1px solid rgba(37, 99, 235, 0.18);
+  background: linear-gradient(135deg, rgba(239, 246, 255, 0.96) 0%, rgba(248, 250, 252, 0.92) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.anchor-selection-main {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.anchor-selection-icon {
+  margin-top: 2px;
+  color: #2563eb;
+  font-size: 18px;
+}
+
+.anchor-selection-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.anchor-selection-copy strong {
+  color: #0f172a;
+  font-size: 14px;
+}
+
+.anchor-selection-copy span {
+  color: #1d4ed8;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.anchor-selection-copy small {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.anchor-selection-clear {
+  border: none;
+  background: #2563eb;
+  color: #fff;
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
 }
 
 .interactive-content :deep(.share-anchor-block.has-comments)::after {
@@ -938,6 +1153,10 @@ onUnmounted(() => {
   border-bottom: 1px solid rgba(226, 232, 240, 0.72);
 }
 
+.comment-item.resolved {
+  opacity: 0.92;
+}
+
 .comment-item:last-child {
   border-bottom: none;
 }
@@ -985,6 +1204,19 @@ onUnmounted(() => {
   background: rgba(255, 247, 237, 0.9);
 }
 
+.comment-status-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.comment-resolved-meta {
+  color: #64748b;
+  font-size: 12px;
+}
+
 .comment-anchor-preview {
   margin-bottom: 10px;
   padding: 10px 12px;
@@ -1000,6 +1232,91 @@ onUnmounted(() => {
   line-height: 1.8;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.comment-thread-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+
+.comment-reply-btn {
+  border: none;
+  background: transparent;
+  color: #2563eb;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+}
+
+.comment-reply-btn:disabled {
+  color: #94a3b8;
+  cursor: wait;
+}
+
+.comment-reply-btn.active {
+  color: #1d4ed8;
+}
+
+.comment-delete-btn {
+  border: none;
+  background: transparent;
+  color: #dc2626;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  padding: 0;
+}
+
+.comment-delete-btn.blocked {
+  color: #c2410c;
+}
+
+.comment-delete-btn:disabled {
+  color: #fca5a5;
+  cursor: wait;
+}
+
+.comment-reply-count {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.comment-replies {
+  margin-top: 16px;
+  padding-left: 16px;
+  border-left: 2px solid rgba(191, 219, 254, 0.9);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.comment-reply-item {
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(248, 250, 252, 0.92);
+  border: 1px solid rgba(226, 232, 240, 0.88);
+}
+
+.comment-reply-editor {
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 18px;
+  background: rgba(239, 246, 255, 0.62);
+  border: 1px solid rgba(147, 197, 253, 0.3);
+}
+
+.reply-actions {
+  align-items: center;
+}
+
+.reply-action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .share-footer {
@@ -1031,6 +1348,7 @@ onUnmounted(() => {
   }
 
   .anchor-preview-head,
+  .anchor-selection-banner,
   .comments-head,
   .comment-actions {
     flex-direction: column;

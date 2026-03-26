@@ -7,6 +7,8 @@ public class ShareCommentRequest {
     private String content;
     private String authorName;
     private String code;
+    private String ownerToken;
+    private Long parentCommentId;
     private String anchorKey;
     private String anchorType;
     private String anchorLabel;

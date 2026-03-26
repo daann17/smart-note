@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { ArrowLeftOutlined, LinkOutlined, DeleteOutlined } from '@ant-design/icons-vue';
+import { ArrowLeftOutlined, LinkOutlined, DeleteOutlined, MessageOutlined } from '@ant-design/icons-vue';
 import api from '../api';
 import { message, Modal } from 'ant-design-vue';
 
@@ -98,6 +98,15 @@ const disableShare = (noteId: number) => {
               <a-button type="link" size="small" @click="copyLink(record.token)" :disabled="!record.isActive || (record.expireAt && new Date(record.expireAt) < new Date())">
                 <template #icon><LinkOutlined /></template>
                 复制链接
+              </a-button>
+              <a-button
+                type="link"
+                size="small"
+                @click="router.push({ name: 'comments', params: { notebookId: record.note.notebook?.id, noteId: record.note.id } })"
+                :disabled="!record.note?.notebook?.id"
+              >
+                <template #icon><MessageOutlined /></template>
+                评论区
               </a-button>
               <a-button type="link" danger size="small" @click="disableShare(record.note.id)" v-if="record.isActive">
                 <template #icon><DeleteOutlined /></template>

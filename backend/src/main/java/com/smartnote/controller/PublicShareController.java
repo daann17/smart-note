@@ -1,11 +1,9 @@
 package com.smartnote.controller;
 
 import com.smartnote.dto.ShareCommentRequest;
-import com.smartnote.dto.ShareCommentResponse;
 import com.smartnote.entity.Note;
 import com.smartnote.entity.NoteComment;
 import com.smartnote.entity.NoteShare;
-import com.smartnote.repository.NoteCommentRepository;
 import com.smartnote.repository.NoteRepository;
 import com.smartnote.service.ShareService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -21,9 +19,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDateTime;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/public/shares")
@@ -31,9 +27,6 @@ public class PublicShareController {
 
     @Autowired
     private ShareService shareService;
-
-    @Autowired
-    private NoteCommentRepository commentRepository;
 
     @Autowired
     private NoteRepository noteRepository;
@@ -94,7 +87,7 @@ public class PublicShareController {
         try {
             NoteShare share = shareService.getShareByToken(token);
             if (share.getAllowEdit() == null || !share.getAllowEdit()) {
-                return ResponseEntity.status(403).body(Map.of("message", "该分享未开启协同编辑功能"));
+                return ResponseEntity.status(403).body(Map.of("message", "This share does not allow collaborative editing"));
             }
 
             validateExtractionCode(share, payload.containsKey("code") ? (String) payload.get("code") : null);
@@ -112,7 +105,7 @@ public class PublicShareController {
                 noteRepository.save(note);
             }
 
-            return ResponseEntity.ok(Map.of("message", "保存成功", "updatedAt", note.getUpdatedAt()));
+            return ResponseEntity.ok(Map.of("message", "Saved", "updatedAt", note.getUpdatedAt()));
         } catch (IllegalStateException exception) {
             return ResponseEntity.status(403).body(Map.of("message", exception.getMessage()));
         } catch (Exception exception) {
@@ -123,18 +116,13 @@ public class PublicShareController {
     @GetMapping("/{token}/comments")
     public ResponseEntity<?> getComments(
             @PathVariable String token,
-            @RequestParam(required = false) String code
+            @RequestParam(required = false) String code,
+            @RequestParam(required = false) String ownerToken
     ) {
         try {
             NoteShare share = shareService.getShareByToken(token);
             validateCommentAccess(share, code);
-
-            List<ShareCommentResponse> comments = commentRepository.findByShareIdOrderByCreatedAtDesc(share.getId())
-                    .stream()
-                    .map(this::toCommentResponse)
-                    .collect(Collectors.toList());
-
-            return ResponseEntity.ok(comments);
+            return ResponseEntity.ok(shareService.getShareCommentsByShareId(share.getId(), ownerToken));
         } catch (IllegalStateException exception) {
             return ResponseEntity.status(403).body(Map.of("message", exception.getMessage()));
         } catch (Exception exception) {
@@ -148,17 +136,8 @@ public class PublicShareController {
             NoteShare share = shareService.getShareByToken(token);
             validateCommentAccess(share, request.getCode());
 
-            NoteComment comment = new NoteComment();
-            comment.setShareId(share.getId());
-            comment.setContent(normalizeRequiredText(request.getContent(), 1000, "评论内容"));
-            comment.setAuthorName(normalizeOptionalText(request.getAuthorName(), 50, "作者名称", "匿名用户"));
-            comment.setAnchorKey(normalizeOptionalText(request.getAnchorKey(), 120, "段落锚点", null));
-            comment.setAnchorType(normalizeOptionalText(request.getAnchorType(), 20, "段落类型", null));
-            comment.setAnchorLabel(normalizeOptionalText(request.getAnchorLabel(), 120, "段落标题", null));
-            comment.setAnchorPreview(normalizeOptionalText(request.getAnchorPreview(), 300, "段落摘要", null));
-
-            NoteComment savedComment = commentRepository.save(comment);
-            return ResponseEntity.ok(toCommentResponse(savedComment));
+            NoteComment savedComment = shareService.createPublicComment(share, request);
+            return ResponseEntity.ok(shareService.toCommentResponse(savedComment));
         } catch (IllegalStateException exception) {
             return ResponseEntity.status(403).body(Map.of("message", exception.getMessage()));
         } catch (IllegalArgumentException exception) {
@@ -168,9 +147,28 @@ public class PublicShareController {
         }
     }
 
+    @org.springframework.web.bind.annotation.DeleteMapping("/{token}/comments/{commentId}")
+    public ResponseEntity<?> deleteComment(
+            @PathVariable String token,
+            @PathVariable Long commentId,
+            @RequestParam(required = false) String code,
+            @RequestParam String ownerToken
+    ) {
+        try {
+            NoteShare share = shareService.getShareByToken(token);
+            validateCommentAccess(share, code);
+            shareService.deletePublicComment(share, commentId, ownerToken);
+            return ResponseEntity.ok(Map.of("message", "Comment deleted"));
+        } catch (IllegalStateException exception) {
+            return ResponseEntity.status(403).body(Map.of("message", exception.getMessage()));
+        } catch (Exception exception) {
+            return ResponseEntity.badRequest().body(Map.of("message", exception.getMessage()));
+        }
+    }
+
     private void validateCommentAccess(NoteShare share, String code) {
         if (share.getAllowComment() == null || !share.getAllowComment()) {
-            throw new IllegalStateException("该分享未开启评论功能");
+            throw new IllegalStateException("This share does not allow comments");
         }
 
         validateExtractionCode(share, code);
@@ -180,46 +178,8 @@ public class PublicShareController {
         String extractionCode = share.getExtractionCode();
         if (extractionCode != null && !extractionCode.isBlank()) {
             if (code == null || !extractionCode.equals(code.trim())) {
-                throw new IllegalStateException("提取码错误");
+                throw new IllegalStateException("Invalid extraction code");
             }
         }
-    }
-
-    private ShareCommentResponse toCommentResponse(NoteComment comment) {
-        return new ShareCommentResponse(
-                comment.getId(),
-                comment.getContent(),
-                comment.getAuthorName(),
-                comment.getAnchorKey(),
-                comment.getAnchorType(),
-                comment.getAnchorLabel(),
-                comment.getAnchorPreview(),
-                comment.getCreatedAt()
-        );
-    }
-
-    private String normalizeRequiredText(String value, int maxLength, String fieldName) {
-        String normalized = normalizeOptionalText(value, maxLength, fieldName, null);
-        if (normalized == null) {
-            throw new IllegalArgumentException(fieldName + "不能为空");
-        }
-        return normalized;
-    }
-
-    private String normalizeOptionalText(String value, int maxLength, String fieldName, String fallback) {
-        if (value == null) {
-            return fallback;
-        }
-
-        String trimmed = value.trim();
-        if (trimmed.isEmpty()) {
-            return fallback;
-        }
-
-        if (trimmed.length() > maxLength) {
-            throw new IllegalArgumentException(fieldName + "长度不能超过" + maxLength + "个字符");
-        }
-
-        return trimmed;
     }
 }

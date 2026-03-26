@@ -30,13 +30,25 @@ export interface NoteHistory {
 
 export interface ShareComment {
   id: number;
+  parentCommentId: number | null;
   content: string;
   authorName: string;
+  authorComment: boolean;
   createdAt: string;
   anchorKey: string | null;
   anchorType: string | null;
   anchorLabel: string | null;
   anchorPreview: string | null;
+  resolved: boolean;
+  resolvedAt: string | null;
+  resolvedBy: string | null;
+  viewerCanDelete: boolean;
+  replies: ShareComment[];
+}
+
+export interface ShareCommentPayload {
+  content: string;
+  parentCommentId?: number;
 }
 
 export interface NoteSearchFilters {
@@ -336,6 +348,37 @@ export const useNoteStore = defineStore('note', () => {
     }
   };
 
+  const replyToShareComment = async (noteId: number, data: ShareCommentPayload) => {
+    try {
+      const response = await api.post<ShareComment>(`/shares/note/${noteId}/comments`, data);
+      return response.data;
+    } catch (error) {
+      console.error('Failed to reply share comment', error);
+      throw error;
+    }
+  };
+
+  const resolveShareComment = async (noteId: number, commentId: number, resolved: boolean) => {
+    try {
+      const response = await api.put<ShareComment>(`/shares/note/${noteId}/comments/${commentId}/resolve`, {
+        resolved,
+      });
+      return response.data;
+    } catch (error) {
+      console.error('Failed to update share comment status', error);
+      throw error;
+    }
+  };
+
+  const deleteShareComment = async (noteId: number, commentId: number) => {
+    try {
+      await api.delete(`/shares/note/${noteId}/comments/${commentId}`);
+    } catch (error) {
+      console.error('Failed to delete share comment', error);
+      throw error;
+    }
+  };
+
   const exportNoteToMarkdown = async (id: number, title: string) => {
     try {
       const response = await api.get(`/notes/${id}/export/markdown`, {
@@ -406,6 +449,9 @@ export const useNoteStore = defineStore('note', () => {
     getShare,
     disableShare,
     getShareComments,
+    replyToShareComment,
+    resolveShareComment,
+    deleteShareComment,
     exportNoteToMarkdown,
     exportNoteToPdf,
     exportNoteToWord,
