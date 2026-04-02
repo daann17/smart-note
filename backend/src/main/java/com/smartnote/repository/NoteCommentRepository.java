@@ -13,4 +13,5 @@ public interface NoteCommentRepository extends JpaRepository<NoteComment, Long> 
     List<NoteComment> findByShareIdOrderByCreatedAtDesc(Long shareId);
     List<NoteComment> findByShareIdAndParentCommentId(Long shareId, Long parentCommentId);
     Optional<NoteComment> findByIdAndShareId(Long id, Long shareId);
+    long deleteByShareId(Long shareId);
 }

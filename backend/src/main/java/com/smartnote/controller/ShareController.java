@@ -123,4 +123,10 @@ public class ShareController {
         shareService.disableShare(noteId);
         return ResponseEntity.ok(Map.of("message", "Share disabled"));
     }
+
+    @DeleteMapping("/{shareId}")
+    public ResponseEntity<?> deleteShare(@PathVariable Long shareId) {
+        shareService.deleteShare(shareId);
+        return ResponseEntity.ok(Map.of("message", "Share deleted"));
+    }
 }

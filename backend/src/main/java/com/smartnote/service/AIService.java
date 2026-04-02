@@ -3,6 +3,7 @@ package com.smartnote.service;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.smartnote.dto.AIChatMessageRequest;
+import com.smartnote.dto.AIChatSourceResponse;
 import com.smartnote.entity.Note;
 import com.smartnote.entity.User;
 import com.smartnote.repository.NoteRepository;
@@ -48,6 +49,7 @@ public class AIService {
     private static final int MAX_RELATED_RESULTS_PER_QUERY = 5;
     private static final int MAX_NOTE_EXCERPT_LENGTH = 700;
     private static final int MAX_CURRENT_NOTE_LENGTH = 2000;
+    private static final int MAX_SOURCE_SNIPPET_LENGTH = 180;
     private static final DateTimeFormatter NOTE_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
     private static final Pattern ENGLISH_TOKEN_PATTERN = Pattern.compile("[A-Za-z][A-Za-z0-9+#._-]{1,23}");
     private static final Pattern CHINESE_TOKEN_PATTERN = Pattern.compile("[\\u4e00-\\u9fa5]{2,12}");
@@ -162,7 +164,7 @@ public class AIService {
         }
     }
 
-    public Flux<String> chat(
+    public ChatSession chat(
             String message,
             Long noteId,
             List<AIChatMessageRequest> history,
@@ -179,7 +181,10 @@ public class AIService {
         String systemPrompt = buildSystemPrompt(currentNote, relatedNotes);
         String userPrompt = buildUserPrompt(normalizedMessage, sanitizedHistory);
 
-        return Flux.defer(() -> streamChatCompletion(systemPrompt, userPrompt));
+        return new ChatSession(
+                buildChatSources(currentNote, relatedNotes),
+                Flux.defer(() -> streamChatCompletion(systemPrompt, userPrompt))
+        );
     }
 
     private Note resolveCurrentNote(Long noteId, String username) {
@@ -529,6 +534,43 @@ public class AIService {
         return "AI 服务调用失败，请稍后重试";
     }
 
+    private List<AIChatSourceResponse> buildChatSources(Note currentNote, List<Note> relatedNotes) {
+        LinkedHashSet<Long> seenNoteIds = new LinkedHashSet<>();
+        java.util.ArrayList<AIChatSourceResponse> sources = new java.util.ArrayList<>();
+
+        if (currentNote != null) {
+            AIChatSourceResponse currentSource = toChatSource(currentNote, "current");
+            if (currentSource != null && seenNoteIds.add(currentSource.noteId())) {
+                sources.add(currentSource);
+            }
+        }
+
+        for (Note relatedNote : relatedNotes) {
+            AIChatSourceResponse relatedSource = toChatSource(relatedNote, "related");
+            if (relatedSource != null && seenNoteIds.add(relatedSource.noteId())) {
+                sources.add(relatedSource);
+            }
+        }
+
+        return List.copyOf(sources);
+    }
+
+    private AIChatSourceResponse toChatSource(Note note, String kind) {
+        if (note == null || note.getId() == null) {
+            return null;
+        }
+
+        Long notebookId = note.getNotebook() == null ? null : note.getNotebook().getId();
+        return new AIChatSourceResponse(
+                note.getId(),
+                notebookId,
+                defaultTitle(note),
+                clipText(buildNoteSnippet(note), MAX_SOURCE_SNIPPET_LENGTH),
+                formatNoteTime(note),
+                kind
+        );
+    }
+
     private String buildSystemPrompt(Note currentNote, List<Note> relatedNotes) {
         StringBuilder builder = new StringBuilder();
         builder.append("""
@@ -626,6 +668,12 @@ public class AIService {
             return "--";
         }
         return NOTE_TIME_FORMATTER.format(note.getUpdatedAt());
+    }
+
+    public record ChatSession(
+            List<AIChatSourceResponse> sources,
+            Flux<String> chunks
+    ) {
     }
 
     private static final class RetrievalCandidate {

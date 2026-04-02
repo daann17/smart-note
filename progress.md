@@ -4,185 +4,218 @@
 
 ## 1. 当前阶段判断
 
-SmartNote 已经从“功能原型”进入“可持续迭代的可用版本”。当前代码库具备完整的前后端主链路，核心功能不再依赖单点演示，而是形成了可实际使用的一组稳定模块：
+SmartNote 已从“功能原型”进入“可持续迭代的可用版本”阶段。当前前后端主链路已经完整，核心能力可跑通，且关键功能不再依赖临时演示代码。
 
-- 用户认证与权限链路已打通
-- 笔记、笔记本、标签、回收站、版本历史可持续使用
+目前项目的真实状态可以概括为：
+
+- 用户认证、权限控制、管理员入口已打通
+- 笔记、笔记本、标签、回收站、历史版本已可稳定使用
 - 编辑器已从 Vditor 迁移为 `CodeMirror 6 + Yjs + STOMP` 的 CRDT 协同方案
-- 搜索、知识图谱、分享协作、个人中心、管理员中心均已具备前台可见能力
-- 导出、安全配置、部署启动脚本、管理端存储统计已补齐到可交付状态
+- 分享、协同编辑、评论区、导出、AI 问答、知识图谱均已有可见成果
+- 项目已具备继续做毕业设计展示、答辩演示和后续部署优化的基础
 
-## 2. 模块进度总览
+## 2. 主要模块完成度
 
 状态说明：
 
-- `已完成`：核心能力已经落地并可正常使用
-- `进行中`：已有稳定基础，但仍有明确扩展空间
-- `未开始`：当前代码库中暂未形成对应实现
+- `已完成`：主链路已落地，可正常使用
+- `进行中`：已有稳定基础，但仍有体验和细节可继续深化
+- `待补强`：已有方向，但还没形成完整闭环
 
 | 模块 | 当前状态 | 说明 |
 | --- | --- | --- |
-| 用户认证与授权（AU） | 已完成 | 已实现注册、登录、JWT、路由守卫、协作者登录门槛、管理员接口鉴权 |
-| 个人知识库核心（NK） | 已完成 | 已实现笔记本/笔记 CRUD、Markdown 编辑、标签、回收站、版本历史、移动复制、文件上传 |
-| AI 辅助（AI） | 进行中 | 已实现摘要、标签建议、知识库 AI 问答链路；图谱关系自动建议与引用可视化仍待推进 |
-| 搜索与发现（SD） | 进行中 | 已实现关键词搜索、高级筛选、结果高亮、筛选条件记忆、知识图谱页面；索引维护仍待补齐 |
-| 分享与协作（SC） | 进行中 | 已实现公开分享、提取码、评论区、段落级评论、CRDT 实时协同、协作者登录要求、Markdown/PDF/Word 导出；通知与线程化协作仍待深化 |
-| 系统管理与监控（SM） | 进行中 | 已实现管理员概览、用户管理、账号启停、角色调整、存储统计；索引维护与更完整监控仍待补齐 |
+| 用户认证与权限 | 已完成 | 注册、登录、JWT、路由守卫、管理员鉴权、协作者登录门槛均已落地 |
+| 笔记核心能力 | 已完成 | 笔记本/笔记 CRUD、Markdown 编辑、标签、历史版本、回收站、移动/复制、文件上传已具备 |
+| 协同编辑 | 进行中 | CRDT 主链路已完成，协作者光标/在线状态/同步链路已跑通，仍可继续做更细腻的协作反馈 |
+| 分享与评论 | 进行中 | 分享链接、提取码、可评论/可协同编辑、段落级评论、删除评论已实现 |
+| AI 能力 | 进行中 | 智能摘要、标签建议、AI 问答链路、流式响应、停止生成已实现，引用来源和更强知识图谱联动仍可继续做 |
+| 搜索与知识图谱 | 进行中 | 关键词搜索、高级筛选、知识图谱可视化已上线，图谱自动关系建议仍待补强 |
+| 导出与部署 | 进行中 | Markdown / PDF / Word 导出已具备，Linux 部署友好性已补一轮 |
+| 管理端 | 进行中 | 用户管理、启停用、角色调整、存储统计、搜索维护入口已有，仍可继续扩展监控面板 |
 
-## 3. 已落地能力
+## 3. 已落地能力清单
 
-### 3.1 认证与用户体系
+### 3.1 用户与权限
 
-- 用户注册、登录、退出已完成
-- JWT 认证与前端路由守卫已稳定接入
-- 个人中心已支持维护：
+- 用户注册、登录、退出
+- JWT 认证与前端会话恢复
+- 协作者必须登录后才能参与协同编辑
+- 管理员页面 `/admin` 已具备服务端权限保护
+- 个人中心已支持基本资料维护：
   - 昵称
   - 简介
   - 绑定手机号
   - 生日
-- 协作者参与实时协同前必须先登录
-- 管理员接口已启用服务端角色鉴权
 
-### 3.2 笔记与知识管理
+### 3.2 笔记与编辑器
 
-- 笔记本创建、编辑、删除、移动
-- 笔记创建、编辑、保存、预览
-- Markdown 编辑与图片/文件上传
-- 标签维护与笔记标签关联
-- 版本历史、预览与回滚
-- 回收站恢复、清空与定时清理
-- 最近编辑列表与工作台概览
+- 笔记本、笔记、标签的创建/编辑/删除
+- Markdown 编辑、分栏预览、实时渲染
+- 历史版本查看与回滚
+- 回收站恢复与清理
+- 笔记移动、复制
+- 图片/文件上传
+- Markdown 编辑器已改为 `CodeMirror 6`
 
 ### 3.3 协同编辑
 
-- 主编辑器已切换为 `CodeMirror 6 + Markdown + Yjs + STOMP`
-- 文本同步基于 CRDT，不再使用脆弱的纯文本广播
-- 已实现多人同时编辑时的冲突自动收敛
-- 已实现协作者在线状态与基础可视化区分
-- WebSocket 协同链路与保存接口均带权限校验
+- 基于 `Yjs + CodeMirror + STOMP` 的 CRDT 协同编辑
+- 协作者在线状态与光标状态同步
+- 行级协作者提示
+- 分享页登录后协同编辑
+- 分享页协同保存链路
 
-### 3.4 搜索与知识图谱
+### 3.4 分享、评论、导出
 
-- 首页全局搜索支持关键词检索
-- 已支持高级筛选：
-  - 按笔记本
-  - 按标签
-  - 按更新时间起止日期
-- 已支持搜索结果高亮与筛选条件记忆
-- 已完成知识图谱独立页面：
-  - 笔记本 / 笔记 / 标签节点可视化
-  - 节点拖拽与回弹
-  - 选中节点固定 / 取消固定
-  - 关系显隐切换
-  - 右侧详情面板
-  - 关联关系按类型分组显示
-  - 关系类型快速筛选
+- 分享链接生成
+- 提取码访问
+- 分享页只读 / 可评论 / 可协同编辑模式
+- 评论区独立页面
+- 段落级评论定位与高亮
+- 评论删除、回复删除
+- Markdown / PDF / Word 导出
 
-### 3.5 分享与协作
+### 3.5 AI 与图谱
 
-- 支持生成公开分享链接
-- 支持提取码访问
-- 支持分享评论
-- 支持登录后加入协同会话
-- 匿名用户不再具备协同编辑能力
-- 已支持导出：
-  - Markdown
-  - PDF
-  - Word
+- AI 摘要
+- AI 标签建议
+- AI 问答抽屉
+- 流式回答
+- 停止生成
+- 知识图谱可视化页面
+- 节点详情、关系筛选、图谱交互优化
 
-### 3.6 管理员中心
+### 3.6 管理端与部署
 
-- 已新增独立管理员页面 `/admin`
-- 已实现管理员路由守卫与服务端接口鉴权
-- 已实现系统概览卡片：
-  - 总用户数
-  - 启用账号数
-  - 停用账号数
-  - 管理员数量
-  - 笔记 / 笔记本 / 标签总量
-- 已实现用户管理表格：
-  - 用户信息查看
-  - 角色切换
-  - 账号启用 / 停用
-  - 自身账号保护
-  - 最后一个启用管理员保护
-- 已实现存储统计：
-  - 笔记正文占用估算
-  - 历史版本占用估算
-  - 上传目录总占用
-  - 用户维度知识数据排行
+- 管理员首页
+- 用户管理
+- 角色调整、启停用
+- 存储统计
+- 搜索维护入口
+- `.env` 配置方案
+- Windows / Linux 启动脚本
+- `application.example.yml` 示例配置
 
-### 3.7 安全与部署
+## 4. 本轮最新完成内容
 
-- 明文敏感配置已从仓库主配置中移除
-- 已引入 `backend/.env`、`backend/.env.example`
-- 已补充 Windows / Linux 启动脚本
-- 后端端口与前端代理目标均支持环境变量配置
-- Linux 下 PDF 字体路径支持环境变量配置与兜底策略
+本轮重点完善的是“笔记编辑器上传体验”和“协同同步稳定性”。
 
-## 4. 与计划书相比的重要变化
+### 4.1 上传体验修复
 
-- 编辑器技术栈已从 `Vditor` 切换为 `CodeMirror 6 + Yjs`
-- 协同编辑方案已升级为 CRDT，同步稳定性显著高于传统文本广播
-- 搜索体验已补充结果高亮与筛选条件记忆
-- 导出能力已从规划项推进到可用状态，支持 Markdown / PDF / Word
-- 管理端能力已扩展到存储统计，不再停留在基础概览
-- 配置安全与启动流程已补齐，具备更明确的本地与 Linux 部署路径
+目标：解决“上传图片后编辑器里直接显示一长串丑陋 URL”的问题，并修复“粘贴图片上传失败”的问题。
 
-## 5. 下一阶段建议优先级
+已完成：
 
-结合当前完成度，下一批最值得继续投入的方向如下：
+- 在编辑器中将上传后的 Markdown 资源折叠为可视卡片，而不是直接暴露长 URL
+- 点击卡片可回到原始 Markdown，兼顾可视化与可编辑性
+- 粘贴图片时新增剪贴板文件提取逻辑，兼容 `clipboardData.files` 与 `clipboardData.items`
+- 对无文件名的剪贴板图片自动生成稳定文件名，如 `pasted-image-时间戳.png`
+- 上传请求不再手动强写 `multipart/form-data`，避免 boundary 问题
+- 分享协同场景下上传请求可携带 `shareToken`
 
-1. 分享协作深化
-   - 段落级评论
-   - 评论锚点定位与跳转
-   - 评论与导出的联动策略
-2. 搜索与管理增强
-   - 搜索索引维护
-   - 搜索结果分组进一步优化
-   - 管理端索引操作入口
-3. AI 能力继续补齐
+涉及文件：
+
+- [MarkdownEditor.vue](/e:/毕业设计/SmartNote/frontend/src/components/MarkdownEditor.vue)
+
+### 4.2 协同同步卡死修复
+
+目标：解决粘贴失败后界面一直停留在“正在同步协作文档”的问题。
+
+已完成：
+
+- 重构协同初始化时机，改为订阅建立后再主动触发初始同步
+- 初始同步增加超时兜底，不再无限等待某条 join 回包
+- 收到 `sync-response` 或远端 `doc-update` 后会主动结束同步等待态
+
+涉及文件：
+
+- [StompYjsProviderSecure.ts](/e:/毕业设计/SmartNote/frontend/src/lib/StompYjsProviderSecure.ts)
+
+### 4.3 后端上传容错补强
+
+目标：即便前端没有提供正常文件名，后端也能保存粘贴图片。
+
+已完成：
+
+- 后端对 `originalFilename` 为空的情况做兼容
+- 根据 MIME 类型推导图片扩展名
+- 上传返回值中为无文件名资源生成可展示名称
+- 拒绝空文件
+
+涉及文件：
+
+- [FileService.java](/e:/毕业设计/SmartNote/backend/src/main/java/com/smartnote/service/FileService.java)
+- [FileController.java](/e:/毕业设计/SmartNote/backend/src/main/java/com/smartnote/controller/FileController.java)
+
+## 5. 本轮验证结果
+
+已完成验证：
+
+- 前端构建通过：`npm run build`
+- 后端编译通过：`mvn -DskipTests clean compile`
+
+说明：
+
+- 本轮未做浏览器端人工点击回归，但上传与协同相关代码路径已完成静态编译验证
+
+## 6. 当前脏工作区说明
+
+当前仓库不是干净状态，除本轮改动外，还有之前未提交的功能改动存在。新对话继续开发时不要误回退这些文件。
+
+当前 `git status` 可见的相关修改包括：
+
+- [backend/src/main/java/com/smartnote/controller/AIController.java](/e:/毕业设计/SmartNote/backend/src/main/java/com/smartnote/controller/AIController.java)
+- [backend/src/main/java/com/smartnote/controller/FileController.java](/e:/毕业设计/SmartNote/backend/src/main/java/com/smartnote/controller/FileController.java)
+- [backend/src/main/java/com/smartnote/controller/ShareController.java](/e:/毕业设计/SmartNote/backend/src/main/java/com/smartnote/controller/ShareController.java)
+- [backend/src/main/java/com/smartnote/dto/AIChatSourceResponse.java](/e:/毕业设计/SmartNote/backend/src/main/java/com/smartnote/dto/AIChatSourceResponse.java)
+- [backend/src/main/java/com/smartnote/repository/NoteCommentRepository.java](/e:/毕业设计/SmartNote/backend/src/main/java/com/smartnote/repository/NoteCommentRepository.java)
+- [backend/src/main/java/com/smartnote/service/AIService.java](/e:/毕业设计/SmartNote/backend/src/main/java/com/smartnote/service/AIService.java)
+- [backend/src/main/java/com/smartnote/service/FileService.java](/e:/毕业设计/SmartNote/backend/src/main/java/com/smartnote/service/FileService.java)
+- [backend/src/main/java/com/smartnote/service/ShareService.java](/e:/毕业设计/SmartNote/backend/src/main/java/com/smartnote/service/ShareService.java)
+- [frontend/src/components/AIAssistantDrawer.vue](/e:/毕业设计/SmartNote/frontend/src/components/AIAssistantDrawer.vue)
+- [frontend/src/components/MarkdownEditor.vue](/e:/毕业设计/SmartNote/frontend/src/components/MarkdownEditor.vue)
+- [frontend/src/lib/StompYjsProviderSecure.ts](/e:/毕业设计/SmartNote/frontend/src/lib/StompYjsProviderSecure.ts)
+- [frontend/src/views/ShareManageView.vue](/e:/毕业设计/SmartNote/frontend/src/views/ShareManageView.vue)
+
+## 7. 当前遗留问题与注意点
+
+- `MarkdownEditor.vue` 历史上经历过多次中文编码污染，本轮已经把会影响构建的断裂文本修正，但文件内部仍不够干净，后续适合做一次专门的中文化/文本清理
+- 编辑器上传体验已明显改善，但还没有做“上传中进度反馈 / 重试 / 失败占位卡片”
+- 协同编辑已稳定很多，但还可以继续做：
+  - 更精细的多用户同段编辑冲突提示
+  - 更明显的远端选择区高亮
+  - 更自然的协作者身份展示
+- AI、分享、评论相关链路已有未提交改动，新对话里应先看当前工作区再继续开发
+
+## 8. 建议下一步优先级
+
+如果开新对话后继续推进，建议优先顺序如下：
+
+1. 清理 `MarkdownEditor.vue` 的历史乱码和中文文案
+2. 补一轮编辑器上传体验：
+   - 上传中状态
+   - 上传失败重试
+   - 拖拽/粘贴图片统一反馈
+3. 继续做 AI 与知识图谱联动：
    - 图谱关系自动建议
-   - AI 回答引用来源可视化与停止生成控制
+   - AI 回答来源可视化
+4. 深化分享协作：
+   - 评论通知
+   - 协作者变更提示
+   - 更细的权限模型
 
-当前推荐优先实现：`图谱关系自动建议`。
+## 9. 新对话承接建议
 
-原因：
+如果要开新对话，建议直接说明这几点：
 
-- 已有摘要、标签建议、知识问答链路，继续补齐图谱 AI 更容易形成完整能力闭环
-- 能与现有知识图谱页面直接联动，提升展示效果与结构化价值
-- 相比继续堆叠基础功能，这一项对产品差异化更直接
+- 当前项目是 `Vue 3 + Spring Boot + PostgreSQL`
+- 编辑器已切到 `CodeMirror 6 + Yjs + STOMP`
+- 本轮刚修完“粘贴图片上传失败”和“协同同步蒙层卡住”
+- 继续开发前先读取：
+  - [plan.md](/e:/毕业设计/SmartNote/plan.md)
+  - [progress.md](/e:/毕业设计/SmartNote/progress.md)
+- 开发时不要回退当前脏工作区中的既有修改
 
-## 6. 本次更新日志
+可以直接在新对话里用这句作为起点：
 
-### 2026-03-25
-
-- 补齐文档导出能力：
-  - Markdown 导出
-  - PDF 导出
-  - Word 导出
-- 修复 PDF 导出在 Linux / 非 Windows 字体环境下的兼容性问题
-- 引入安全配置方案：
-  - 主配置移除明文密码与 API Key
-  - 新增 `backend/.env` 与 `backend/.env.example`
-  - 新增 `backend/start.ps1` 与 `backend/start.sh`
-- 调整本地默认后端端口为 `8081`
-- 前端开发代理改为可配置，不再硬编码 `8080`
-- 新增管理员存储统计：
-  - 系统存储概览
-  - 用户知识数据排行
-- 重写 README 与进度文档，使其与当前项目状态保持一致
-### 2026-03-26
-
-- 新增管理员搜索维护能力：
-  - 后端新增 `/api/admin/search/maintenance` 状态接口
-  - 后端新增 `/api/admin/search/maintenance/{operation}` 执行接口
-  - 支持 `ANALYZE`、`VACUUM ANALYZE`、`REINDEX`
-  - 管理员中心新增“搜索维护”面板，展示搜索相关表规模、最近执行结果与维护入口
-- 完成 AI 问答链路接入：
-  - 后端 `/api/ai/chat` 改为标准 SSE 流式输出
-  - AI 请求体支持多轮历史消息 `history`
-  - AI 服务支持当前笔记上下文、全局知识库检索、启发式关键词提取与 AI 查询改写
-  - 首页接入全局知识库 AI 问答入口
-  - 笔记页接入当前笔记上下文 AI 问答入口
-  - AI 抽屉支持本地会话持久化、快捷提问、清空会话与登录失效处理
+`先读取 plan.md 和 progress.md，检查当前 git 工作区，在不回退既有修改的前提下继续推进 SmartNote。`

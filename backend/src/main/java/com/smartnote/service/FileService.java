@@ -27,19 +27,32 @@ public class FileService {
         }
     }
 
+    public String resolveOriginalFileName(MultipartFile file) {
+        String originalFileName = StringUtils.cleanPath(file.getOriginalFilename() == null ? "" : file.getOriginalFilename());
+        String fileExtension = resolveFileExtension(originalFileName, file.getContentType());
+
+        if (originalFileName.contains("..")) {
+            throw new RuntimeException("Sorry! Filename contains invalid path sequence " + originalFileName);
+        }
+
+        if (!StringUtils.hasText(originalFileName)) {
+            return "uploaded-file" + fileExtension;
+        }
+
+        if (!originalFileName.contains(".") && StringUtils.hasText(fileExtension)) {
+            return originalFileName + fileExtension;
+        }
+
+        return originalFileName;
+    }
+
     public String storeFile(MultipartFile file) {
-        // Normalize file name
-        String originalFileName = StringUtils.cleanPath(file.getOriginalFilename());
-        String fileExtension = "";
+        String originalFileName = resolveOriginalFileName(file);
+        String fileExtension = resolveFileExtension(originalFileName, file.getContentType());
         
         try {
-            if (originalFileName.contains(".")) {
-                fileExtension = originalFileName.substring(originalFileName.lastIndexOf("."));
-            }
-            
-            // Check if the file's name contains invalid characters
-            if (originalFileName.contains("..")) {
-                throw new RuntimeException("Sorry! Filename contains invalid path sequence " + originalFileName);
+            if (file.isEmpty()) {
+                throw new RuntimeException("Cannot store empty file.");
             }
 
             // Create a unique file name
@@ -53,5 +66,25 @@ public class FileService {
         } catch (IOException ex) {
             throw new RuntimeException("Could not store file " + originalFileName + ". Please try again!", ex);
         }
+    }
+
+    private String resolveFileExtension(String originalFileName, String contentType) {
+        if (StringUtils.hasText(originalFileName) && originalFileName.contains(".")) {
+            return originalFileName.substring(originalFileName.lastIndexOf("."));
+        }
+
+        if (contentType == null) {
+            return "";
+        }
+
+        return switch (contentType.toLowerCase()) {
+            case "image/png" -> ".png";
+            case "image/jpeg" -> ".jpg";
+            case "image/gif" -> ".gif";
+            case "image/webp" -> ".webp";
+            case "image/svg+xml" -> ".svg";
+            case "image/bmp" -> ".bmp";
+            default -> "";
+        };
     }
 }

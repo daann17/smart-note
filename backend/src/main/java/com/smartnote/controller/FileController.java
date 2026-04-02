@@ -30,8 +30,9 @@ public class FileController {
         Map<String, String> succMap = new HashMap<>();
 
         for (MultipartFile file : files) {
-            String originalFileName = file.getOriginalFilename();
+            String originalFileName = "uploaded-file";
             try {
+                originalFileName = fileService.resolveOriginalFileName(file);
                 String fileName = fileService.storeFile(file);
 
                 // Build the file download URI

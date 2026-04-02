@@ -39,6 +39,22 @@
           <div class="message-bubble">
             <template v-if="msg.role === 'assistant'">
               <div class="markdown-body" v-html="renderMarkdown(msg.content)"></div>
+              <div v-if="msg.sources?.length" class="message-sources">
+                <button
+                  v-for="source in msg.sources"
+                  :key="`${source.kind}-${source.noteId}`"
+                  type="button"
+                  class="source-card"
+                  @click="openSourceNote(source)"
+                >
+                  <span class="source-kind" :class="source.kind">
+                    {{ source.kind === 'current' ? '当前笔记' : '参考笔记' }}
+                  </span>
+                  <strong class="source-title">{{ source.title }}</strong>
+                  <span v-if="source.updatedAt" class="source-time">{{ source.updatedAt }}</span>
+                  <span v-if="source.snippet" class="source-snippet">{{ source.snippet }}</span>
+                </button>
+              </div>
             </template>
             <template v-else>
               {{ msg.content }}
@@ -96,6 +112,16 @@ import { clearSession } from '../utils/session';
 type ChatMessage = {
   role: 'user' | 'assistant';
   content: string;
+  sources?: ChatSource[];
+};
+
+type ChatSource = {
+  noteId: number;
+  notebookId: number | null;
+  title: string;
+  snippet: string;
+  updatedAt: string;
+  kind: 'current' | 'related';
 };
 
 type ChatHistoryPayload = {
@@ -109,7 +135,7 @@ const props = defineProps<{
   currentNoteTitle?: string | null;
 }>();
 
-defineEmits(['update:visible']);
+const emit = defineEmits(['update:visible']);
 
 const router = useRouter();
 const md = new MarkdownIt({ breaks: true, linkify: true });
@@ -159,6 +185,26 @@ const createGreeting = (): ChatMessage => ({
     : '你好，我是 SmartNote AI。你可以直接就整个知识库提问，我会结合检索到的笔记内容回答。',
 });
 
+const normalizeChatSource = (value: unknown): ChatSource | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const source = value as Partial<ChatSource>;
+  if (typeof source.noteId !== 'number' || typeof source.title !== 'string') {
+    return null;
+  }
+
+  return {
+    noteId: source.noteId,
+    notebookId: typeof source.notebookId === 'number' ? source.notebookId : null,
+    title: source.title,
+    snippet: typeof source.snippet === 'string' ? source.snippet : '',
+    updatedAt: typeof source.updatedAt === 'string' ? source.updatedAt : '',
+    kind: source.kind === 'current' ? 'current' : 'related',
+  };
+};
+
 const persistMessages = () => {
   localStorage.setItem(contextStorageKey.value, JSON.stringify(messages.value.slice(-20)));
 };
@@ -173,7 +219,17 @@ const loadMessages = () => {
   try {
     const parsed = JSON.parse(raw) as ChatMessage[];
     const normalized = Array.isArray(parsed)
-      ? parsed.filter((item) => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string')
+      ? parsed
+        .filter((item) => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string')
+        .map((item) => ({
+          role: item.role,
+          content: item.content,
+          sources: Array.isArray(item.sources)
+            ? item.sources
+              .map((source) => normalizeChatSource(source))
+              .filter((source): source is ChatSource => Boolean(source))
+            : undefined,
+        }))
       : [];
     messages.value = normalized.length > 0 ? normalized : [createGreeting()];
   } catch (_error) {
@@ -200,6 +256,23 @@ const clearInputMessage = () => {
   });
   window.requestAnimationFrame(() => {
     inputMessage.value = '';
+  });
+};
+
+const openSourceNote = async (source: ChatSource) => {
+  if (!source.notebookId) {
+    return;
+  }
+
+  emit('update:visible', false);
+  await router.push({
+    name: 'notebook',
+    params: {
+      notebookId: source.notebookId,
+    },
+    query: {
+      noteId: source.noteId,
+    },
   });
 };
 
@@ -258,16 +331,62 @@ const resolveResponseErrorMessage = (payload: string, status: number) => {
   return payload.trim();
 };
 
-const appendSseChunk = (targetIndex: number, rawEvent: string) => {
-  const payload = rawEvent
-    .split('\n')
-    .filter((line) => line.startsWith('data:'))
-    .map((line) => {
+const parseSseEvent = (rawEvent: string) => {
+  let event = 'chunk';
+  const payloadLines: string[] = [];
+
+  rawEvent.split('\n').forEach((line) => {
+    if (line.startsWith('event:')) {
+      const value = line.slice(6);
+      event = value.startsWith(' ') ? value.slice(1) : value;
+      return;
+    }
+
+    if (line.startsWith('data:')) {
       const value = line.slice(5);
-      return value.startsWith(' ') ? value.slice(1) : value;
-    })
-    .filter((line) => line !== '[DONE]')
-    .join('\n');
+      payloadLines.push(value.startsWith(' ') ? value.slice(1) : value);
+    }
+  });
+
+  return {
+    event,
+    payload: payloadLines.join('\n'),
+  };
+};
+
+const setMessageSources = (targetIndex: number, sources: ChatSource[]) => {
+  const currentMessage = messages.value[targetIndex];
+  if (!currentMessage) {
+    return false;
+  }
+
+  messages.value[targetIndex] = {
+    ...currentMessage,
+    sources,
+  };
+  return false;
+};
+
+const appendSseChunk = (targetIndex: number, rawEvent: string) => {
+  const { event, payload } = parseSseEvent(rawEvent);
+
+  if (event === 'done') {
+    return false;
+  }
+
+  if (event === 'sources') {
+    try {
+      const parsed = JSON.parse(payload) as unknown[];
+      const sources = Array.isArray(parsed)
+        ? parsed
+          .map((source) => normalizeChatSource(source))
+          .filter((source): source is ChatSource => Boolean(source))
+        : [];
+      return setMessageSources(targetIndex, sources);
+    } catch (_error) {
+      return false;
+    }
+  }
 
   if (!payload) {
     return false;
@@ -555,6 +674,70 @@ watch(
   border: 1px solid rgba(226, 232, 240, 0.8);
   border-top-left-radius: 6px;
   box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+}
+
+.message-sources {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.source-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid rgba(191, 219, 254, 0.8);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #f8fbff 0%, #eef6ff 100%);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.source-card:hover {
+  transform: translateY(-1px);
+  border-color: rgba(59, 130, 246, 0.5);
+  box-shadow: 0 10px 24px rgba(59, 130, 246, 0.12);
+}
+
+.source-kind {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.source-kind.current {
+  background: rgba(59, 130, 246, 0.14);
+  color: #1d4ed8;
+}
+
+.source-kind.related {
+  background: rgba(14, 165, 233, 0.12);
+  color: #0369a1;
+}
+
+.source-title {
+  color: #0f172a;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.source-time {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.source-snippet {
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .chat-input-area {

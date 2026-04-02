@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { ArrowLeftOutlined, LinkOutlined, DeleteOutlined, MessageOutlined } from '@ant-design/icons-vue';
+import { ArrowLeftOutlined, LinkOutlined, DeleteOutlined, MessageOutlined, CloseCircleOutlined } from '@ant-design/icons-vue';
 import api from '../api';
 import { message, Modal } from 'ant-design-vue';
 
@@ -46,6 +46,25 @@ const disableShare = (noteId: number) => {
         fetchShares();
       } catch (error) {
         message.error('操作失败');
+      }
+    }
+  });
+};
+
+const deleteShareRecord = (shareId: number) => {
+  Modal.confirm({
+    title: '删除分享记录',
+    content: '删除后将移除该分享记录及其评论数据，分享链接会永久失效，确定继续吗？',
+    okText: '确认删除',
+    okType: 'danger',
+    cancelText: '取消',
+    onOk: async () => {
+      try {
+        await api.delete(`/shares/${shareId}`);
+        message.success('分享记录已删除');
+        fetchShares();
+      } catch (error) {
+        message.error('删除分享记录失败');
       }
     }
   });
@@ -109,8 +128,12 @@ const disableShare = (noteId: number) => {
                 评论区
               </a-button>
               <a-button type="link" danger size="small" @click="disableShare(record.note.id)" v-if="record.isActive">
-                <template #icon><DeleteOutlined /></template>
+                <template #icon><CloseCircleOutlined /></template>
                 关闭
+              </a-button>
+              <a-button type="link" danger size="small" @click="deleteShareRecord(record.id)">
+                <template #icon><DeleteOutlined /></template>
+                删除记录
               </a-button>
             </div>
           </template>

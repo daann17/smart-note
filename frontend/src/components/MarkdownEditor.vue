@@ -1,9 +1,18 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { message } from 'ant-design-vue';
 import { basicSetup } from 'codemirror';
-import { Annotation, EditorSelection, EditorState, RangeSet } from '@codemirror/state';
-import { Decoration, EditorView, ViewPlugin } from '@codemirror/view';
+import { Annotation, EditorSelection, EditorState, Prec, RangeSet, StateField } from '@codemirror/state';
+import {
+  Decoration,
+  EditorView,
+  GutterMarker,
+  ViewPlugin,
+  WidgetType,
+  keymap,
+  lineNumberWidgetMarker,
+  type DecorationSet,
+} from '@codemirror/view';
 import { markdown } from '@codemirror/lang-markdown';
 import MarkdownIt from 'markdown-it';
 import * as Y from 'yjs';
@@ -33,9 +42,49 @@ type Collaborator = {
   color: string;
   colorLight: string;
 };
+type MarkdownImage = {
+  from: number;
+  to: number;
+  alt: string;
+  url: string;
+  width: number | null;
+  height: number | null;
+};
+type ImagePreset = {
+  label: string;
+  width: number | null;
+};
+type ImageEditorDraft = {
+  from: number;
+  to: number;
+  alt: string;
+  url: string;
+  width: number | null;
+  height: number | null;
+  source: string;
+};
+
+type ImageSize = {
+  width: number | null;
+  height: number | null;
+};
+type ResizeHandle = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+type DeleteRange = {
+  from: number;
+  to: number;
+};
+
+const markdownImageRegex = /!\[(?<alt>[^\]]*)\]\((?<url>[^)\s]+)(?:\s+"[^"]*")?\)(?<attrs>\{[^}\n]+\})?/g;
+const imageWidthPresets: ImagePreset[] = [
+  { label: '小', width: 280 },
+  { label: '中', width: 480 },
+  { label: '大', width: 720 },
+  { label: '适应', width: null },
+];
 
 const editorHostRef = ref<HTMLElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
+const workspaceRef = ref<HTMLElement | null>(null);
 
 const editorView = shallowRef<EditorView | null>(null);
 const provider = shallowRef<StompYjsProvider | null>(null);
@@ -49,10 +98,29 @@ const viewMode = ref<ViewMode>(window.innerWidth < 960 ? 'edit' : 'split');
 const collaborators = ref<Collaborator[]>([]);
 const syncingDocument = ref(Boolean(props.collab));
 const draggingFiles = ref(false);
+const imagePreviewVisible = ref(false);
+const imagePreviewSrc = ref('');
+const imagePreviewAlt = ref('');
+const imageEditorVisible = ref(false);
+const imageEditorDraft = ref<ImageEditorDraft | null>(null);
+const viewportWidth = ref(window.innerWidth);
+const workspaceContentWidth = ref(0);
+const splitEditorWidth = ref<number | null>(null);
+const resizingSplit = ref(false);
 
 const clientId = Math.random().toString(36).slice(2, 10);
 const userLabel = props.currentUser?.trim() || `协作者-${clientId.slice(0, 4)}`;
 
+const SPLIT_LAYOUT_BREAKPOINT = 1100;
+const SPLIT_DIVIDER_WIDTH = 18;
+const MIN_EDITOR_PANE_WIDTH = 360;
+const MIN_PREVIEW_PANE_WIDTH = 320;
+const DEFAULT_EDITOR_PANE_RATIO = 0.54;
+
+let workspaceResizeObserver: ResizeObserver | null = null;
+let removeSplitResizeListeners: (() => void) | null = null;
+let previousBodyCursor = '';
+let previousBodyUserSelect = '';
 let htmlEmitTimer: ReturnType<typeof setTimeout> | null = null;
 
 const md = new MarkdownIt({
@@ -61,13 +129,241 @@ const md = new MarkdownIt({
   html: false,
 });
 
+const defaultImageRenderer = md.renderer.rules.image
+  ?? ((tokens, index, options, _env, self) => self.renderToken(tokens, index, options));
+
+md.renderer.rules.image = (tokens, index, options, env, self) => {
+  const token = tokens[index];
+  if (!token) {
+    return '';
+  }
+
+  const title = token.attrGet('title');
+  const widthMatch = title?.match(/(?:^|\s)width=(\d+)/);
+  const heightMatch = title?.match(/(?:^|\s)height=(\d+)/);
+  const styleRules = ['max-width: 100%'];
+
+  if (widthMatch?.[1]) {
+    const matchedWidth = widthMatch[1];
+    token.attrSet('data-display-width', matchedWidth);
+    styleRules.push(`width: min(100%, ${matchedWidth}px)`);
+  }
+
+  if (heightMatch?.[1]) {
+    const matchedHeight = heightMatch[1];
+    token.attrSet('data-display-height', matchedHeight);
+    styleRules.push(`height: ${matchedHeight}px`);
+  }
+
+  token.attrSet('style', styleRules.join('; '));
+  token.attrSet('title', '');
+
+  const existingClass = token.attrGet('class');
+  token.attrSet('class', existingClass ? `${existingClass} markdown-rendered-image` : 'markdown-rendered-image');
+
+  return defaultImageRenderer(tokens, index, options, env, self);
+};
+
+const normalizeImageDimension = (value: number | null | undefined) => {
+  if (value == null || Number.isNaN(Number(value))) {
+    return null;
+  }
+
+  const normalized = Math.round(Number(value));
+  if (normalized < 80) return 80;
+  if (normalized > 2400) return 2400;
+  return normalized;
+};
+
+const parseImageSizeAttributes = (attrs: string | undefined): ImageSize => {
+  const source = attrs ?? '';
+  const widthMatch = source.match(/width=(\d+)/);
+  const heightMatch = source.match(/height=(\d+)/);
+
+  return {
+    width: normalizeImageDimension(widthMatch?.[1] ? Number(widthMatch[1]) : null),
+    height: normalizeImageDimension(heightMatch?.[1] ? Number(heightMatch[1]) : null),
+  };
+};
+
+const buildMarkdownImage = (alt: string, url: string, width: number | null, height: number | null) => {
+  const escapedAlt = alt.replace(/]/g, '\\]');
+  const trimmedUrl = url.trim();
+  const normalizedWidth = normalizeImageDimension(width);
+  const normalizedHeight = normalizeImageDimension(height);
+  const attrs = [
+    normalizedWidth ? `width=${normalizedWidth}` : '',
+    normalizedHeight ? `height=${normalizedHeight}` : '',
+  ].filter(Boolean).join(' ');
+
+  return `![${escapedAlt}](${trimmedUrl})${attrs ? `{${attrs}}` : ''}`;
+};
+
+const transformMarkdownForPreview = (content: string) => content.replace(
+  (() => {
+    markdownImageRegex.lastIndex = 0;
+    return markdownImageRegex;
+  })(),
+  (_match, alt: string, url: string, attrs?: string) => {
+    const size = parseImageSizeAttributes(attrs);
+    const titleParts = [
+      size.width ? `width=${size.width}` : '',
+      size.height ? `height=${size.height}` : '',
+    ].filter(Boolean);
+
+    if (titleParts.length === 0) {
+      return `![${alt}](${url})`;
+    }
+
+    return `![${alt}](${url} "${titleParts.join(' ')}")`;
+  },
+);
+
+const renderMarkdownContent = (content: string) => md.render(transformMarkdownForPreview(content));
+
 const renderedHtml = computed(() => {
   if (!currentContent.value.trim()) {
     return '<p class="preview-empty">开始输入内容，即可在这里实时预览。</p>';
   }
 
-  return md.render(currentContent.value);
+  return renderMarkdownContent(currentContent.value);
 });
+
+const splitIsDraggable = computed(() => (
+  viewMode.value === 'split'
+  && viewportWidth.value > SPLIT_LAYOUT_BREAKPOINT
+  && workspaceContentWidth.value >= MIN_EDITOR_PANE_WIDTH + MIN_PREVIEW_PANE_WIDTH + SPLIT_DIVIDER_WIDTH
+));
+
+const splitShouldStack = computed(() => viewMode.value === 'split' && !splitIsDraggable.value);
+
+const clampSplitEditorWidth = (width: number, totalWidth: number) => {
+  const maxWidth = totalWidth - MIN_PREVIEW_PANE_WIDTH - SPLIT_DIVIDER_WIDTH;
+  return Math.min(Math.max(width, MIN_EDITOR_PANE_WIDTH), maxWidth);
+};
+
+const measureWorkspace = () => {
+  viewportWidth.value = window.innerWidth;
+
+  if (!workspaceRef.value) {
+    workspaceContentWidth.value = 0;
+    return;
+  }
+
+  const styles = window.getComputedStyle(workspaceRef.value);
+  const paddingLeft = Number.parseFloat(styles.paddingLeft || '0');
+  const paddingRight = Number.parseFloat(styles.paddingRight || '0');
+
+  workspaceContentWidth.value = Math.max(0, workspaceRef.value.clientWidth - paddingLeft - paddingRight);
+};
+
+const requestEditorLayout = () => {
+  editorView.value?.requestMeasure();
+};
+
+const syncSplitEditorWidth = () => {
+  if (!splitIsDraggable.value) {
+    splitEditorWidth.value = null;
+    return;
+  }
+
+  const defaultWidth = Math.round((workspaceContentWidth.value - SPLIT_DIVIDER_WIDTH) * DEFAULT_EDITOR_PANE_RATIO);
+  splitEditorWidth.value = clampSplitEditorWidth(
+    splitEditorWidth.value ?? defaultWidth,
+    workspaceContentWidth.value,
+  );
+};
+
+const syncSplitLayout = () => {
+  measureWorkspace();
+  syncSplitEditorWidth();
+};
+
+const workspaceStyle = computed<Record<string, string> | undefined>(() => {
+  if (!splitIsDraggable.value || splitEditorWidth.value == null) {
+    return undefined;
+  }
+
+  const editorWidth = clampSplitEditorWidth(splitEditorWidth.value, workspaceContentWidth.value);
+  const previewWidth = Math.max(
+    MIN_PREVIEW_PANE_WIDTH,
+    workspaceContentWidth.value - editorWidth - SPLIT_DIVIDER_WIDTH,
+  );
+
+  return {
+    gridTemplateColumns: `${editorWidth}px ${SPLIT_DIVIDER_WIDTH}px ${previewWidth}px`,
+    '--split-divider-width': `${SPLIT_DIVIDER_WIDTH}px`,
+  };
+});
+
+const stopSplitResize = () => {
+  if (removeSplitResizeListeners) {
+    removeSplitResizeListeners();
+    removeSplitResizeListeners = null;
+  }
+
+  if (!resizingSplit.value) {
+    return;
+  }
+
+  resizingSplit.value = false;
+  document.body.style.cursor = previousBodyCursor;
+  document.body.style.userSelect = previousBodyUserSelect;
+};
+
+const updateSplitFromClientX = (clientX: number) => {
+  if (!workspaceRef.value || !splitIsDraggable.value) {
+    return;
+  }
+
+  const rect = workspaceRef.value.getBoundingClientRect();
+  const styles = window.getComputedStyle(workspaceRef.value);
+  const paddingLeft = Number.parseFloat(styles.paddingLeft || '0');
+  const pointerOffset = clientX - rect.left - paddingLeft - (SPLIT_DIVIDER_WIDTH / 2);
+
+  splitEditorWidth.value = clampSplitEditorWidth(Math.round(pointerOffset), workspaceContentWidth.value);
+  requestEditorLayout();
+};
+
+const startSplitResize = (event: PointerEvent) => {
+  if (!splitIsDraggable.value) {
+    return;
+  }
+
+  event.preventDefault();
+  stopSplitResize();
+
+  previousBodyCursor = document.body.style.cursor;
+  previousBodyUserSelect = document.body.style.userSelect;
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+  resizingSplit.value = true;
+
+  updateSplitFromClientX(event.clientX);
+
+  const handlePointerMove = (moveEvent: PointerEvent) => {
+    updateSplitFromClientX(moveEvent.clientX);
+  };
+
+  const handlePointerUp = () => {
+    stopSplitResize();
+  };
+
+  window.addEventListener('pointermove', handlePointerMove);
+  window.addEventListener('pointerup', handlePointerUp);
+  window.addEventListener('pointercancel', handlePointerUp);
+
+  removeSplitResizeListeners = () => {
+    window.removeEventListener('pointermove', handlePointerMove);
+    window.removeEventListener('pointerup', handlePointerUp);
+    window.removeEventListener('pointercancel', handlePointerUp);
+  };
+};
+
+const handleWindowResize = () => {
+  syncSplitLayout();
+  requestEditorLayout();
+};
 
 const connectionLabel = computed(() => {
   if (connectionState.value === 'local') return '本地草稿';
@@ -302,6 +598,116 @@ const editorTheme = EditorView.theme({
     top: '-0.3em',
     left: '-0.28em',
   },
+  '.cm-md-image-widget': {
+    margin: '20px 0',
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+  },
+  '.cm-md-image-frame': {
+    display: 'inline-flex',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: '10px',
+    maxWidth: '100%',
+  },
+  '.cm-md-image-stage': {
+    position: 'relative',
+    display: 'inline-flex',
+    maxWidth: '100%',
+  },
+  '.cm-md-image-media': {
+    display: 'block',
+    width: 'auto',
+    maxWidth: '100%',
+    padding: '0',
+    border: 'none',
+    background: 'transparent',
+    cursor: 'zoom-in',
+  },
+  '.cm-md-image-media img': {
+    display: 'block',
+    margin: '0 auto',
+    maxHeight: 'none',
+    objectFit: 'fill',
+    borderRadius: '18px',
+    boxShadow: '0 18px 40px rgba(15, 23, 42, 0.10)',
+  },
+  '.cm-md-image-resize-overlay': {
+    position: 'absolute',
+    inset: '0',
+    pointerEvents: 'none',
+  },
+  '.cm-md-resize-handle': {
+    position: 'absolute',
+    border: 'none',
+    background: 'transparent',
+    boxShadow: 'none',
+    borderRadius: '0',
+    pointerEvents: 'auto',
+    touchAction: 'none',
+  },
+  '.cm-md-resize-handle.is-e, .cm-md-resize-handle.is-w': {
+    top: '50%',
+    width: '18px',
+    height: '64px',
+    transform: 'translateY(-50%)',
+    cursor: 'ew-resize',
+  },
+  '.cm-md-resize-handle.is-e': {
+    right: '-9px',
+  },
+  '.cm-md-resize-handle.is-w': {
+    left: '-9px',
+  },
+  '.cm-md-resize-handle.is-n, .cm-md-resize-handle.is-s': {
+    left: '50%',
+    width: '64px',
+    height: '18px',
+    transform: 'translateX(-50%)',
+    cursor: 'ns-resize',
+  },
+  '.cm-md-resize-handle.is-n': {
+    top: '-9px',
+  },
+  '.cm-md-resize-handle.is-s': {
+    bottom: '-9px',
+  },
+  '.cm-md-resize-handle.is-ne, .cm-md-resize-handle.is-nw, .cm-md-resize-handle.is-se, .cm-md-resize-handle.is-sw': {
+    width: '20px',
+    height: '20px',
+  },
+  '.cm-md-resize-handle.is-ne': {
+    top: '-10px',
+    right: '-10px',
+    cursor: 'nesw-resize',
+  },
+  '.cm-md-resize-handle.is-nw': {
+    top: '-10px',
+    left: '-10px',
+    cursor: 'nwse-resize',
+  },
+  '.cm-md-resize-handle.is-se': {
+    right: '-10px',
+    bottom: '-10px',
+    cursor: 'nwse-resize',
+  },
+  '.cm-md-resize-handle.is-sw': {
+    left: '-10px',
+    bottom: '-10px',
+    cursor: 'nesw-resize',
+  },
+  '.cm-md-image-toolbar': {
+    display: 'none',
+  },
+  '.cm-md-image-widget[data-broken="true"] .cm-md-image-media': {
+    cursor: 'default',
+  },
+  '.cm-md-image-widget[data-broken="true"] .cm-md-image-media img': {
+    minHeight: '180px',
+    objectFit: 'contain',
+    opacity: 0.45,
+  },
 });
 
 const scheduleHtmlEmit = (content: string) => {
@@ -310,7 +716,7 @@ const scheduleHtmlEmit = (content: string) => {
   }
 
   htmlEmitTimer = setTimeout(() => {
-    emit('update:contentHtml', md.render(content));
+    emit('update:contentHtml', renderMarkdownContent(content));
   }, 120);
 };
 
@@ -344,6 +750,687 @@ const refreshCollaborators = () => {
 
   collaborators.value = nextCollaborators;
 };
+
+const parseMarkdownImages = (docText: string) => {
+  const matches: MarkdownImage[] = [];
+  markdownImageRegex.lastIndex = 0;
+
+  for (const match of docText.matchAll(markdownImageRegex)) {
+    const fullText = match[0];
+    const alt = match.groups?.alt ?? '';
+    const url = match.groups?.url ?? '';
+    const size = parseImageSizeAttributes(match.groups?.attrs);
+
+    matches.push({
+      from: match.index ?? 0,
+      to: (match.index ?? 0) + fullText.length,
+      alt,
+      url,
+      width: size.width,
+      height: size.height,
+    });
+  }
+
+  return matches;
+};
+
+const getImageSizeText = (width: number | null, height: number | null) => {
+  if (width == null && height == null) {
+    return '按容器宽度自适应';
+  }
+
+  if (width != null && height != null) {
+    return `${width} × ${height}px`;
+  }
+
+  if (width != null) {
+    return `宽度 ${width}px`;
+  }
+
+  return `高度 ${height}px`;
+};
+
+const resolveImageRange = (draft: ImageEditorDraft) => {
+  const view = editorView.value;
+  if (!view) return null;
+
+  const currentDoc = view.state.doc.toString();
+  if (currentDoc.slice(draft.from, draft.to) === draft.source) {
+    return draft;
+  }
+
+  const matchedBySource = parseMarkdownImages(currentDoc).find((image) => (
+    buildMarkdownImage(image.alt, image.url, image.width, image.height) === draft.source
+  ));
+
+  if (matchedBySource) {
+    return {
+      ...draft,
+      from: matchedBySource.from,
+      to: matchedBySource.to,
+      source: buildMarkdownImage(matchedBySource.alt, matchedBySource.url, matchedBySource.width, matchedBySource.height),
+    };
+  }
+
+  return draft;
+};
+
+const openImagePreview = (image: Pick<MarkdownImage, 'url' | 'alt'>) => {
+  imagePreviewSrc.value = image.url;
+  imagePreviewAlt.value = image.alt;
+  imagePreviewVisible.value = true;
+};
+
+const closeImagePreview = () => {
+  imagePreviewVisible.value = false;
+  imagePreviewSrc.value = '';
+  imagePreviewAlt.value = '';
+};
+
+const openImageEditor = (image: MarkdownImage) => {
+  imageEditorDraft.value = {
+    ...image,
+    source: buildMarkdownImage(image.alt, image.url, image.width, image.height),
+  };
+  imageEditorVisible.value = true;
+};
+
+const closeImageEditor = () => {
+  imageEditorVisible.value = false;
+  imageEditorDraft.value = null;
+};
+
+const setImageDraftWidth = (width: number | null) => {
+  if (!imageEditorDraft.value) {
+    return;
+  }
+
+  imageEditorDraft.value = {
+    ...imageEditorDraft.value,
+    width,
+  };
+};
+
+const setImageDraftHeight = (height: number | null) => {
+  if (!imageEditorDraft.value) {
+    return;
+  }
+
+  imageEditorDraft.value = {
+    ...imageEditorDraft.value,
+    height,
+  };
+};
+
+const updateImageMarkdown = (image: Pick<MarkdownImage, 'from' | 'to' | 'alt' | 'url' | 'width' | 'height'>) => {
+  const markdownText = buildMarkdownImage(image.alt, image.url, image.width, image.height);
+  const selection = image.from + markdownText.length;
+  insertRange(image.from, image.to, markdownText, selection, selection);
+};
+
+const resizeImage = (image: MarkdownImage, size: ImageSize) => {
+  updateImageMarkdown({
+    ...image,
+    width: size.width,
+    height: size.height,
+  });
+};
+
+const getImageDeleteRange = (state: EditorState, image: MarkdownImage) => {
+  const startLine = state.doc.lineAt(image.from);
+  const endLine = state.doc.lineAt(Math.max(image.from, image.to - 1));
+  let from = image.from;
+  let to = image.to;
+
+  if (startLine.number === endLine.number) {
+    const fullLineText = state.doc.sliceString(startLine.from, endLine.to).trim();
+    const imageText = state.doc.sliceString(image.from, image.to).trim();
+
+    if (fullLineText === imageText) {
+      from = startLine.from;
+      to = endLine.to;
+
+      if (to < state.doc.length && state.doc.sliceString(to, to + 1) === '\n') {
+        to += 1;
+      }
+    }
+  }
+
+  return { from, to };
+};
+
+const removeImage = (image: MarkdownImage) => {
+  const view = editorView.value;
+  if (!view) return;
+
+  const deleteRange = getImageDeleteRange(view.state, image);
+  insertRange(deleteRange.from, deleteRange.to, '', deleteRange.from, deleteRange.from);
+};
+
+const shouldDeleteImageAtCursor = (
+  state: EditorState,
+  image: MarkdownImage,
+  cursor: number,
+  key: 'Backspace' | 'Delete',
+) => {
+  const deleteRange = getImageDeleteRange(state, image);
+
+  if (key === 'Backspace') {
+    return cursor > deleteRange.from && cursor <= deleteRange.to;
+  }
+
+  return cursor >= deleteRange.from && cursor < deleteRange.to;
+};
+
+const mergeDeleteRanges = (ranges: DeleteRange[]) => {
+  if (ranges.length === 0) {
+    return [];
+  }
+
+  const sortedRanges = [...ranges].sort((left, right) => left.from - right.from);
+  const firstRange = sortedRanges[0];
+  if (!firstRange) {
+    return [];
+  }
+
+  const mergedRanges: DeleteRange[] = [firstRange];
+
+  for (const currentRange of sortedRanges.slice(1)) {
+    const lastRange = mergedRanges[mergedRanges.length - 1]!;
+
+    if (currentRange.from <= lastRange.to) {
+      lastRange.to = Math.max(lastRange.to, currentRange.to);
+      continue;
+    }
+
+    mergedRanges.push(currentRange);
+  }
+
+  return mergedRanges;
+};
+
+const collectImageDeleteRanges = (state: EditorState, key: 'Backspace' | 'Delete') => {
+  const images = parseMarkdownImages(state.doc.toString());
+  if (images.length === 0) {
+    return [];
+  }
+
+  const ranges: DeleteRange[] = [];
+
+  state.selection.ranges.forEach((selectionRange) => {
+    if (selectionRange.empty) {
+      const targetImage = images.find((image) => shouldDeleteImageAtCursor(state, image, selectionRange.from, key));
+      if (targetImage) {
+        ranges.push(getImageDeleteRange(state, targetImage));
+      }
+      return;
+    }
+
+    const overlappedRanges = images
+      .filter((image) => selectionRange.from < image.to && selectionRange.to > image.from)
+      .map((image) => getImageDeleteRange(state, image));
+
+    if (overlappedRanges.length === 0) {
+      return;
+    }
+
+    ranges.push({
+      from: Math.min(selectionRange.from, ...overlappedRanges.map((range) => range.from)),
+      to: Math.max(selectionRange.to, ...overlappedRanges.map((range) => range.to)),
+    });
+  });
+
+  return mergeDeleteRanges(ranges);
+};
+
+const runImageDeleteCommand = (key: 'Backspace' | 'Delete') => (view: EditorView) => {
+  const deleteRanges = collectImageDeleteRanges(view.state, key);
+  const firstDeleteRange = deleteRanges[0];
+  if (!firstDeleteRange) {
+    return false;
+  }
+
+  view.dispatch({
+    changes: deleteRanges.map((deleteRange) => ({
+      from: deleteRange.from,
+      to: deleteRange.to,
+      insert: '',
+    })),
+    selection: EditorSelection.cursor(firstDeleteRange.from),
+    scrollIntoView: true,
+  });
+
+  return true;
+};
+
+const findImageCursorTarget = (state: EditorState, key: 'ArrowLeft' | 'ArrowRight') => {
+  const selection = state.selection.main;
+  if (!selection.empty) {
+    return null;
+  }
+
+  const cursor = selection.from;
+  const images = parseMarkdownImages(state.doc.toString());
+
+  if (key === 'ArrowLeft') {
+    const targetImage = images.find((image) => cursor === image.to || (cursor > image.from && cursor < image.to));
+    return targetImage ? targetImage.from : null;
+  }
+
+  const targetImage = images.find((image) => cursor === image.from || (cursor > image.from && cursor < image.to));
+  return targetImage ? targetImage.to : null;
+};
+
+const runImageCursorCommand = (key: 'ArrowLeft' | 'ArrowRight') => (view: EditorView) => {
+  const target = findImageCursorTarget(view.state, key);
+  if (target == null) {
+    return false;
+  }
+
+  view.dispatch({
+    selection: EditorSelection.cursor(target),
+    scrollIntoView: true,
+  });
+  return true;
+};
+
+const imageCursorKeymap = Prec.highest(keymap.of([
+  {
+    key: 'ArrowLeft',
+    run: runImageCursorCommand('ArrowLeft'),
+  },
+  {
+    key: 'ArrowRight',
+    run: runImageCursorCommand('ArrowRight'),
+  },
+]));
+
+const imageDeleteKeymap = Prec.highest(keymap.of([
+  {
+    key: 'Backspace',
+    run: runImageDeleteCommand('Backspace'),
+  },
+  {
+    key: 'Delete',
+    run: runImageDeleteCommand('Delete'),
+  },
+  {
+    key: 'Mod-Backspace',
+    run: runImageDeleteCommand('Backspace'),
+  },
+  {
+    key: 'Mod-Delete',
+    run: runImageDeleteCommand('Delete'),
+  },
+  {
+    key: 'Shift-Backspace',
+    run: runImageDeleteCommand('Backspace'),
+  },
+]));
+
+const applyImageEditor = () => {
+  const draft = imageEditorDraft.value;
+  const view = editorView.value;
+
+  if (!draft || !view) {
+    return;
+  }
+
+  if (!draft.url.trim()) {
+    message.warning('图片地址不能为空');
+    return;
+  }
+
+  const resolvedDraft = resolveImageRange(draft);
+  if (!resolvedDraft) {
+    message.warning('未找到要更新的图片');
+    return;
+  }
+
+  updateImageMarkdown({
+    from: resolvedDraft.from,
+    to: resolvedDraft.to,
+    alt: draft.alt.trim(),
+    url: draft.url.trim(),
+    width: normalizeImageDimension(draft.width),
+    height: normalizeImageDimension(draft.height),
+  });
+
+  closeImageEditor();
+};
+
+const normalizeImageSize = (size: ImageSize): ImageSize => ({
+  width: normalizeImageDimension(size.width),
+  height: normalizeImageDimension(size.height),
+});
+
+const applyImageElementSizeStyles = (element: HTMLImageElement, size: ImageSize) => {
+  element.style.width = size.width == null ? 'auto' : `${size.width}px`;
+  element.style.height = size.height == null ? 'auto' : `${size.height}px`;
+  element.style.maxWidth = '100%';
+};
+
+class MarkdownImageWidget extends WidgetType {
+  private readonly image: MarkdownImage;
+  private readonly actions: {
+    preview: (image: Pick<MarkdownImage, 'url' | 'alt'>) => void;
+    edit: (image: MarkdownImage) => void;
+    resize: (image: MarkdownImage, size: ImageSize) => void;
+    remove: (image: MarkdownImage) => void;
+  };
+
+  constructor(
+    image: MarkdownImage,
+    actions: {
+      preview: (image: Pick<MarkdownImage, 'url' | 'alt'>) => void;
+      edit: (image: MarkdownImage) => void;
+      resize: (image: MarkdownImage, size: ImageSize) => void;
+      remove: (image: MarkdownImage) => void;
+    },
+  ) {
+    super();
+    this.image = image;
+    this.actions = actions;
+  }
+
+  eq(other: MarkdownImageWidget) {
+    return other.image.alt === this.image.alt
+      && other.image.url === this.image.url
+      && other.image.width === this.image.width
+      && other.image.height === this.image.height;
+  }
+
+  toDOM() {
+    const root = document.createElement('div');
+    root.className = 'cm-md-image-widget';
+
+    const frame = document.createElement('div');
+    frame.className = 'cm-md-image-frame';
+    root.appendChild(frame);
+
+    const stage = document.createElement('div');
+    stage.className = 'cm-md-image-stage';
+    frame.appendChild(stage);
+
+    const media = document.createElement('button');
+    media.type = 'button';
+    media.className = 'cm-md-image-media';
+    media.title = '点击查看大图';
+    media.addEventListener('click', (event) => {
+      event.preventDefault();
+      this.actions.preview(this.image);
+    });
+    stage.appendChild(media);
+
+    const imageElement = document.createElement('img');
+    imageElement.src = this.image.url;
+    imageElement.alt = this.image.alt || '笔记图片';
+    imageElement.loading = 'lazy';
+    imageElement.decoding = 'async';
+    applyImageElementSizeStyles(imageElement, this.image);
+    media.appendChild(imageElement);
+
+    const resizeOverlay = document.createElement('div');
+    resizeOverlay.className = 'cm-md-image-resize-overlay';
+    stage.appendChild(resizeOverlay);
+
+    const toolbar = document.createElement('div');
+    toolbar.className = 'cm-md-image-toolbar';
+    frame.appendChild(toolbar);
+
+    const meta = document.createElement('div');
+    meta.className = 'cm-md-image-meta';
+    toolbar.appendChild(meta);
+
+    const name = document.createElement('span');
+    name.className = 'cm-md-image-name';
+    name.textContent = this.image.alt || '未命名图片';
+    meta.appendChild(name);
+
+    const detail = document.createElement('span');
+    detail.className = 'cm-md-image-detail';
+    detail.textContent = getImageSizeText(this.image.width, this.image.height);
+    meta.appendChild(detail);
+
+    const actions = document.createElement('div');
+    actions.className = 'cm-md-image-actions';
+    toolbar.appendChild(actions);
+
+    imageWidthPresets.forEach((preset) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'cm-md-image-action cm-md-image-size';
+      if (preset.width === this.image.width && this.image.height == null) {
+        button.dataset.active = 'true';
+      }
+      button.textContent = preset.label;
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        this.actions.resize(this.image, {
+          width: preset.width,
+          height: null,
+        });
+      });
+      actions.appendChild(button);
+    });
+
+    const editButton = document.createElement('button');
+    editButton.type = 'button';
+    editButton.className = 'cm-md-image-action';
+    editButton.textContent = '设置';
+    editButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      this.actions.edit(this.image);
+    });
+    actions.appendChild(editButton);
+
+    const deleteButton = document.createElement('button');
+    deleteButton.type = 'button';
+    deleteButton.className = 'cm-md-image-action danger';
+    deleteButton.textContent = '删除';
+    deleteButton.addEventListener('click', (event) => {
+      event.preventDefault();
+      this.actions.remove(this.image);
+    });
+    actions.appendChild(deleteButton);
+
+    imageElement.addEventListener('error', () => {
+      root.dataset.broken = 'true';
+      name.textContent = this.image.alt || '图片加载失败';
+      detail.textContent = this.image.url;
+    });
+
+    let naturalWidth = 0;
+    let naturalHeight = 0;
+
+    const syncNaturalSize = () => {
+      naturalWidth = imageElement.naturalWidth || naturalWidth;
+      naturalHeight = imageElement.naturalHeight || naturalHeight;
+    };
+
+    imageElement.addEventListener('load', syncNaturalSize);
+    if (imageElement.complete) {
+      syncNaturalSize();
+    }
+
+    const readCurrentSize = () => {
+      const rect = imageElement.getBoundingClientRect();
+      const width = Math.round(rect.width || this.image.width || naturalWidth || 480);
+      const height = Math.round(rect.height || this.image.height || naturalHeight || 320);
+      return {
+        width: Math.max(width, 80),
+        height: Math.max(height, 80),
+      };
+    };
+
+    const createHandle = (handle: ResizeHandle) => {
+      const handleElement = document.createElement('button');
+      handleElement.type = 'button';
+      handleElement.className = `cm-md-resize-handle is-${handle}`;
+      handleElement.title = '拖拽调整图片尺寸';
+      handleElement.addEventListener('pointerdown', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        const startX = event.clientX;
+        const startY = event.clientY;
+        const startSize = readCurrentSize();
+        const aspectRatio = startSize.width / Math.max(startSize.height, 1);
+        let previewSize: ImageSize = {
+          width: this.image.width,
+          height: this.image.height,
+        };
+
+        const updatePreview = (size: ImageSize) => {
+          previewSize = normalizeImageSize(size);
+          applyImageElementSizeStyles(imageElement, previewSize);
+          detail.textContent = getImageSizeText(previewSize.width, previewSize.height);
+        };
+
+        const resolveWidthOnly = (deltaX: number) => {
+          if (handle.includes('w')) {
+            return startSize.width - deltaX;
+          }
+
+          return startSize.width + deltaX;
+        };
+
+        const resolveHeightOnly = (deltaY: number) => {
+          if (handle.includes('n')) {
+            return startSize.height - deltaY;
+          }
+
+          return startSize.height + deltaY;
+        };
+
+        const onPointerMove = (moveEvent: PointerEvent) => {
+          const deltaX = moveEvent.clientX - startX;
+          const deltaY = moveEvent.clientY - startY;
+
+          if (handle === 'e' || handle === 'w') {
+            updatePreview({
+              width: resolveWidthOnly(deltaX),
+              height: startSize.height,
+            });
+            return;
+          }
+
+          if (handle === 'n' || handle === 's') {
+            updatePreview({
+              width: startSize.width,
+              height: resolveHeightOnly(deltaY),
+            });
+            return;
+          }
+
+          const widthByX = resolveWidthOnly(deltaX);
+          const widthByY = resolveHeightOnly(deltaY) * aspectRatio;
+          const useHorizontalDelta = Math.abs(deltaX / Math.max(startSize.width, 1))
+            >= Math.abs(deltaY / Math.max(startSize.height, 1));
+          const nextWidth = useHorizontalDelta ? widthByX : widthByY;
+          const normalizedWidth = Math.max(80, Math.round(nextWidth));
+          const normalizedHeight = Math.max(80, Math.round(normalizedWidth / Math.max(aspectRatio, 0.01)));
+
+          updatePreview({
+            width: normalizedWidth,
+            height: normalizedHeight,
+          });
+        };
+
+        const finishDrag = () => {
+          window.removeEventListener('pointermove', onPointerMove);
+          window.removeEventListener('pointerup', onPointerUp);
+          document.body.classList.remove('image-resize-active');
+          document.body.style.cursor = '';
+          this.actions.resize(this.image, previewSize);
+        };
+
+        const onPointerUp = () => {
+          finishDrag();
+        };
+
+        document.body.classList.add('image-resize-active');
+        document.body.style.cursor = getComputedStyle(handleElement).cursor;
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('pointerup', onPointerUp, { once: true });
+      });
+      resizeOverlay.appendChild(handleElement);
+    };
+
+    (['n', 's', 'e', 'w', 'ne', 'nw', 'se', 'sw'] as ResizeHandle[]).forEach(createHandle);
+
+    return root;
+  }
+
+  ignoreEvent() {
+    return true;
+  }
+}
+
+class ImageLineNumberMarker extends GutterMarker {
+  private readonly lineNumber: string;
+
+  constructor(lineNumber: string) {
+    super();
+    this.lineNumber = lineNumber;
+  }
+
+  eq(other: ImageLineNumberMarker) {
+    return other.lineNumber === this.lineNumber;
+  }
+
+  toDOM() {
+    return document.createTextNode(this.lineNumber);
+  }
+}
+
+const imageLineNumberMarker = lineNumberWidgetMarker.of((view, widget, block) => {
+  if (!(widget instanceof MarkdownImageWidget)) {
+    return null;
+  }
+
+  return new ImageLineNumberMarker(String(view.state.doc.lineAt(block.from).number));
+});
+
+const buildImageDecorations = (state: EditorState): DecorationSet => {
+  const images = parseMarkdownImages(state.doc.toString());
+  const selection = state.selection.main;
+  const decorations = images.flatMap((image) => {
+    const selectionInsideImage = selection.empty
+      ? selection.from > image.from && selection.from < image.to
+      : selection.from < image.to && selection.to > image.from;
+
+    if (selectionInsideImage) {
+      return [];
+    }
+
+    return Decoration.replace({
+      widget: new MarkdownImageWidget(image, {
+        preview: openImagePreview,
+        edit: openImageEditor,
+        resize: resizeImage,
+        remove: removeImage,
+      }),
+      block: true,
+    }).range(image.from, image.to);
+  });
+
+  return Decoration.set(decorations, true);
+};
+
+const imageWidgetField = StateField.define<DecorationSet>({
+  create(state) {
+    return buildImageDecorations(state);
+  },
+  update(value, transaction) {
+    if (transaction.docChanged || transaction.selection) {
+      return buildImageDecorations(transaction.state);
+    }
+
+    return value.map(transaction.changes);
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
 
 const insertRange = (from: number, to: number, value: string, selectionFrom: number, selectionTo: number) => {
   if (!editorView.value) return;
@@ -428,6 +1515,50 @@ const triggerUploadPicker = () => {
   fileInputRef.value?.click();
 };
 
+const guessFileExtension = (file: Blob & { name?: string }) => {
+  const explicitName = file.name?.trim();
+  if (explicitName && explicitName.includes('.')) {
+    return explicitName.slice(explicitName.lastIndexOf('.'));
+  }
+
+  const mime = file.type.toLowerCase();
+  if (mime === 'image/png') return '.png';
+  if (mime === 'image/jpeg') return '.jpg';
+  if (mime === 'image/webp') return '.webp';
+  if (mime === 'image/gif') return '.gif';
+  if (mime === 'image/svg+xml') return '.svg';
+  if (mime === 'image/bmp') return '.bmp';
+  return '';
+};
+
+const ensureUploadFileName = (file: File, fallbackBase: string) => {
+  const trimmedName = file.name?.trim();
+  if (trimmedName) {
+    return file;
+  }
+
+  const extension = guessFileExtension(file);
+  const safeName = `${fallbackBase}-${Date.now()}${extension}`;
+  return new File([file], safeName, {
+    type: file.type,
+    lastModified: file.lastModified,
+  });
+};
+
+const extractClipboardFiles = (event: ClipboardEvent) => {
+  const directFiles = Array.from(event.clipboardData?.files ?? []);
+  if (directFiles.length > 0) {
+    return directFiles.map((file) => ensureUploadFileName(file, 'pasted-image'));
+  }
+
+  const items = Array.from(event.clipboardData?.items ?? []);
+  return items
+    .filter((item) => item.kind === 'file')
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file))
+    .map((file) => ensureUploadFileName(file, 'pasted-image'));
+};
+
 const insertUploadedFiles = (entries: Array<[string, string]>) => {
   if (!editorView.value || entries.length === 0) return;
 
@@ -438,9 +1569,12 @@ const insertUploadedFiles = (entries: Array<[string, string]>) => {
     })
     .join('\n');
 
-  const { from, to } = editorView.value.state.selection.main;
-  const prefix = from === 0 ? '' : '\n';
-  const suffix = '\n';
+  const state = editorView.value.state;
+  const { from, to } = state.selection.main;
+  const charBefore = from > 0 ? state.doc.sliceString(from - 1, from) : '';
+  const charAfter = to < state.doc.length ? state.doc.sliceString(to, to + 1) : '';
+  const prefix = from === 0 || charBefore === '\n' ? '' : '\n';
+  const suffix = to === state.doc.length || charAfter === '\n' ? '' : '\n';
   const insert = `${prefix}${markdownText}${suffix}`;
   const cursor = from + insert.length;
 
@@ -448,18 +1582,14 @@ const insertUploadedFiles = (entries: Array<[string, string]>) => {
 };
 
 const uploadFiles = async (fileList: FileList | File[]) => {
-  const files = Array.from(fileList);
+  const files = Array.from(fileList).map((file) => ensureUploadFileName(file, 'uploaded-file'));
   if (files.length === 0) return;
 
   const formData = new FormData();
   files.forEach((file) => formData.append('file[]', file));
 
   try {
-    const response = await api.post('/files/upload', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
+    const response = await api.post('/files/upload', formData);
 
     const successMap = response.data?.data?.succMap ?? {};
     const uploadedEntries = Object.entries(successMap) as Array<[string, string]>;
@@ -474,7 +1604,7 @@ const uploadFiles = async (fileList: FileList | File[]) => {
       message.warning(`以下文件上传失败：${failedFiles.join(', ')}`);
     }
   } catch (error) {
-    message.error('文件上传失败');
+    console.error('Failed to upload files', error);
   }
 };
 
@@ -510,8 +1640,8 @@ const handleDrop = async (event: DragEvent) => {
 };
 
 const handlePaste = async (event: ClipboardEvent) => {
-  const files = event.clipboardData?.files;
-  if (!files || files.length === 0) return;
+  const files = extractClipboardFiles(event);
+  if (files.length === 0) return;
 
   event.preventDefault();
   await uploadFiles(files);
@@ -527,6 +1657,10 @@ const buildEditor = () => {
     EditorView.lineWrapping,
     markdown(),
     editorTheme,
+    imageCursorKeymap,
+    imageDeleteKeymap,
+    imageLineNumberMarker,
+    imageWidgetField,
     ...(presencePlugin ? [presencePlugin] : []),
     yCollab(yText.value, provider.value?.awareness, {
       undoManager: undoManager.value || new Y.UndoManager(yText.value),
@@ -549,60 +1683,104 @@ const buildEditor = () => {
   editorView.value.dom.addEventListener('paste', handlePaste);
 };
 
-onMounted(async () => {
-  ydoc.value = new Y.Doc();
-  yText.value = ydoc.value.getText('content');
-  undoManager.value = new Y.UndoManager(yText.value);
-  yText.value.observe(syncContentState);
-
-  if (props.collab && props.noteId) {
-    provider.value = new StompYjsProvider({
-      noteId: props.noteId,
-      doc: ydoc.value,
-      clientId,
-      user: userLabel,
-      color: localColor,
-      colorLight: localColorLight,
-      shareToken: props.shareToken,
-      onStatusChange: (status) => {
-        connectionState.value = status;
-      },
-      onAwarenessChange: refreshCollaborators,
-    });
-  } else {
-    connectionState.value = 'local';
+watch(viewMode, async (mode) => {
+  if (mode !== 'split') {
+    stopSplitResize();
   }
 
-  buildEditor();
+  await nextTick();
+  syncSplitLayout();
 
-  if (!props.collab || !props.noteId) {
-    if (props.modelValue) {
+  if (mode === 'preview') return;
+  editorView.value?.requestMeasure();
+});
+
+watch(splitIsDraggable, (enabled) => {
+  if (!enabled) {
+    stopSplitResize();
+    splitEditorWidth.value = null;
+    return;
+  }
+
+  syncSplitEditorWidth();
+});
+
+onMounted(async () => {
+  try {
+    ydoc.value = new Y.Doc();
+    yText.value = ydoc.value.getText('content');
+    undoManager.value = new Y.UndoManager(yText.value);
+    yText.value.observe(syncContentState);
+
+    if (props.collab && props.noteId) {
+      provider.value = new StompYjsProvider({
+        noteId: props.noteId,
+        doc: ydoc.value,
+        clientId,
+        user: userLabel,
+        color: localColor,
+        colorLight: localColorLight,
+        shareToken: props.shareToken,
+        onStatusChange: (status) => {
+          connectionState.value = status;
+        },
+        onAwarenessChange: refreshCollaborators,
+      });
+    } else {
+      connectionState.value = 'local';
+    }
+
+    buildEditor();
+
+    await nextTick();
+    syncSplitLayout();
+    window.addEventListener('resize', handleWindowResize);
+
+    if (typeof ResizeObserver !== 'undefined' && workspaceRef.value) {
+      workspaceResizeObserver = new ResizeObserver(() => {
+        syncSplitLayout();
+        requestEditorLayout();
+      });
+      workspaceResizeObserver.observe(workspaceRef.value);
+    }
+
+    if (!props.collab || !props.noteId) {
+      if (props.modelValue) {
+        ydoc.value.transact(() => {
+          yText.value?.insert(0, props.modelValue);
+        }, 'seed');
+      }
+      syncingDocument.value = false;
+      syncContentState();
+      return;
+    }
+
+    const shouldSeed = await provider.value!.seedDecision;
+
+    if (shouldSeed && props.modelValue && yText.value && yText.value.length === 0) {
       ydoc.value.transact(() => {
         yText.value?.insert(0, props.modelValue);
       }, 'seed');
     }
+
     syncingDocument.value = false;
     syncContentState();
-    return;
+    refreshCollaborators();
+  } catch (error) {
+    console.error('Failed to initialize Markdown editor', error);
+    syncingDocument.value = false;
+    connectionState.value = props.collab ? 'offline' : 'local';
   }
-
-  const shouldSeed = await provider.value!.seedDecision;
-
-  if (shouldSeed && props.modelValue && yText.value && yText.value.length === 0) {
-    ydoc.value.transact(() => {
-      yText.value?.insert(0, props.modelValue);
-    }, 'seed');
-  }
-
-  syncingDocument.value = false;
-  syncContentState();
-  refreshCollaborators();
 });
 
 onBeforeUnmount(() => {
   if (htmlEmitTimer) {
     clearTimeout(htmlEmitTimer);
   }
+
+  stopSplitResize();
+  window.removeEventListener('resize', handleWindowResize);
+  workspaceResizeObserver?.disconnect();
 
   if (editorView.value) {
     editorView.value.dom.removeEventListener('dragover', handleDragOver);
@@ -689,12 +1867,36 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <div class="editor-workspace" :class="[`mode-${viewMode}`, { dragging: draggingFiles }]">
-      <div v-if="viewMode !== 'preview'" class="editor-pane">
+    <div
+      ref="workspaceRef"
+      class="editor-workspace"
+      :class="[
+        `mode-${viewMode}`,
+        {
+          dragging: draggingFiles,
+          resizing: resizingSplit,
+          'split-draggable': splitIsDraggable,
+          'split-stacked': splitShouldStack,
+        },
+      ]"
+      :style="workspaceStyle"
+    >
+      <div v-show="viewMode !== 'preview'" class="editor-pane">
         <div ref="editorHostRef" class="editor-host"></div>
       </div>
 
-      <div v-if="viewMode !== 'edit'" class="preview-pane">
+      <button
+        v-if="splitIsDraggable"
+        type="button"
+        class="split-divider"
+        title="拖动调整编写栏和预览栏宽度"
+        aria-label="拖动调整编写栏和预览栏宽度"
+        @pointerdown="startSplitResize"
+      >
+        <span class="split-divider-handle"></span>
+      </button>
+
+      <div v-show="viewMode !== 'edit'" class="preview-pane">
         <div class="preview-scroll">
           <div class="markdown-preview" v-html="renderedHtml"></div>
         </div>
@@ -717,6 +1919,81 @@ onBeforeUnmount(() => {
       multiple
       @change="handleFileInputChange"
     />
+
+    <a-modal
+      v-model:open="imagePreviewVisible"
+      title="图片预览"
+      :footer="null"
+      width="960px"
+      @cancel="closeImagePreview"
+    >
+      <div class="editor-image-preview-body">
+        <img :src="imagePreviewSrc" :alt="imagePreviewAlt || '笔记图片预览'" />
+      </div>
+    </a-modal>
+
+    <a-modal
+      v-model:open="imageEditorVisible"
+      title="图片设置"
+      ok-text="应用"
+      cancel-text="取消"
+      @ok="applyImageEditor"
+      @cancel="closeImageEditor"
+    >
+      <div v-if="imageEditorDraft" class="editor-image-form">
+        <div class="editor-image-form-item">
+          <span class="editor-image-form-label">描述</span>
+          <a-input v-model:value="imageEditorDraft.alt" placeholder="这张图片想表达什么" />
+        </div>
+
+        <div class="editor-image-form-item">
+          <span class="editor-image-form-label">地址</span>
+          <a-input v-model:value="imageEditorDraft.url" placeholder="https://example.com/image.png" />
+        </div>
+
+        <div class="editor-image-form-item">
+          <span class="editor-image-form-label">显示宽度</span>
+          <div class="editor-image-size-row">
+            <button
+              v-for="preset in imageWidthPresets"
+              :key="preset.label"
+              type="button"
+              class="editor-image-size-btn"
+              :class="{ active: preset.width === imageEditorDraft.width && imageEditorDraft.height == null }"
+              @click="
+                setImageDraftWidth(preset.width);
+                setImageDraftHeight(null);
+              "
+            >
+              {{ preset.label }}
+            </button>
+          </div>
+          <div class="editor-image-dimension-row">
+            <a-input-number
+              v-model:value="imageEditorDraft.width"
+              class="editor-image-width-input"
+              :min="80"
+              :max="2400"
+              :step="20"
+              addon-before="宽"
+              addon-after="px"
+              placeholder="自动"
+            />
+            <a-input-number
+              v-model:value="imageEditorDraft.height"
+              class="editor-image-width-input"
+              :min="80"
+              :max="2400"
+              :step="20"
+              addon-before="高"
+              addon-after="px"
+              placeholder="自动"
+            />
+          </div>
+          <div class="editor-image-form-hint">留空时按容器宽度自适应，适合正文大图。</div>
+        </div>
+      </div>
+    </a-modal>
   </div>
 </template>
 
@@ -785,6 +2062,7 @@ onBeforeUnmount(() => {
 }
 
 .editor-workspace {
+  --split-divider-width: 18px;
   position: relative;
   flex: 1;
   min-height: 0;
@@ -802,11 +2080,21 @@ onBeforeUnmount(() => {
 }
 
 .editor-workspace.mode-split {
-  grid-template-columns: minmax(0, 1.08fr) minmax(320px, 0.92fr);
+  grid-template-columns: minmax(360px, 1.08fr) minmax(320px, 0.92fr);
+}
+
+.editor-workspace.mode-split.split-draggable {
+  gap: 0;
+  grid-template-columns: minmax(360px, 1.08fr) var(--split-divider-width) minmax(320px, 0.92fr);
+}
+
+.editor-workspace.mode-split.split-stacked {
+  grid-template-columns: 1fr;
 }
 
 .editor-pane,
 .preview-pane {
+  min-width: 0;
   min-height: 0;
   overflow: hidden;
   border-radius: 24px;
@@ -815,6 +2103,58 @@ onBeforeUnmount(() => {
     0 18px 45px rgba(15, 23, 42, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.8);
   border: 1px solid rgba(148, 163, 184, 0.16);
+}
+
+.split-divider {
+  position: relative;
+  align-self: stretch;
+  width: var(--split-divider-width);
+  min-width: var(--split-divider-width);
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.split-divider::before {
+  content: '';
+  position: absolute;
+  top: 20px;
+  bottom: 20px;
+  left: calc(50% - 1px);
+  width: 2px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(148, 163, 184, 0), rgba(148, 163, 184, 0.72), rgba(148, 163, 184, 0));
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  opacity: 0.65;
+}
+
+.split-divider-handle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6px;
+  height: 92px;
+  border-radius: 999px;
+  transform: translate(-50%, -50%);
+  background: linear-gradient(180deg, rgba(20, 184, 166, 0.26), rgba(15, 23, 42, 0.18), rgba(20, 184, 166, 0.26));
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.12);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.split-divider:hover::before,
+.editor-workspace.resizing .split-divider::before {
+  opacity: 1;
+  transform: scaleX(1.5);
+}
+
+.split-divider:hover .split-divider-handle,
+.editor-workspace.resizing .split-divider-handle {
+  transform: translate(-50%, -50%) scaleX(1.24);
+  background: linear-gradient(180deg, rgba(13, 148, 136, 0.42), rgba(15, 23, 42, 0.26), rgba(13, 148, 136, 0.42));
+  box-shadow: 0 18px 38px rgba(15, 23, 42, 0.18);
 }
 
 .editor-host,
@@ -879,6 +2219,16 @@ onBeforeUnmount(() => {
   padding: 0;
   background: transparent;
   color: inherit;
+}
+
+.markdown-preview :deep(img),
+.markdown-preview :deep(.markdown-rendered-image) {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1.15rem auto;
+  border-radius: 18px;
+  box-shadow: 0 18px 42px rgba(15, 23, 42, 0.10);
 }
 
 .markdown-preview :deep(blockquote) {
@@ -998,9 +2348,95 @@ onBeforeUnmount(() => {
   display: none;
 }
 
+.editor-image-preview-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 320px;
+  max-height: 72vh;
+  overflow: auto;
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at top right, rgba(20, 184, 166, 0.10), transparent 28%),
+    linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+  padding: 18px;
+}
+
+.editor-image-preview-body img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(72vh - 36px);
+  object-fit: contain;
+  border-radius: 18px;
+  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.18);
+  background: rgba(255, 255, 255, 0.94);
+}
+
+.editor-image-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.editor-image-form-item {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.editor-image-form-label {
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.editor-image-size-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.editor-image-dimension-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.editor-image-size-btn {
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #334155;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 8px 12px;
+}
+
+.editor-image-size-btn.active {
+  border-color: #0f766e;
+  background: rgba(20, 184, 166, 0.14);
+  color: #0f766e;
+}
+
+.editor-image-width-input {
+  width: 220px;
+}
+
+.editor-image-form-hint {
+  color: #64748b;
+  font-size: 12px;
+}
+
 @media (max-width: 1100px) {
-  .editor-workspace.mode-split {
+  .editor-workspace.mode-split,
+  .editor-workspace.mode-split.split-draggable {
     grid-template-columns: 1fr;
+    gap: 18px;
+  }
+
+  .split-divider {
+    display: none;
   }
 }
 
@@ -1022,6 +2458,10 @@ onBeforeUnmount(() => {
 
   .preview-scroll {
     padding: 22px 18px 34px;
+  }
+
+  .editor-image-width-input {
+    width: 100%;
   }
 }
 </style>

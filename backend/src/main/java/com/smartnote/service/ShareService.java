@@ -120,6 +120,21 @@ public class ShareService {
         });
     }
 
+    @Transactional
+    public void deleteShare(Long shareId) {
+        User currentUser = getCurrentUser();
+        NoteShare share = shareRepository.findById(shareId)
+                .orElseThrow(() -> new ResponseStatusException(NOT_FOUND, "Share not found"));
+
+        Long ownerId = share.getNote().getNotebook().getUser().getId();
+        if (!ownerId.equals(currentUser.getId())) {
+            throw new ResponseStatusException(FORBIDDEN, "No permission to delete this share");
+        }
+
+        commentRepository.deleteByShareId(share.getId());
+        shareRepository.delete(share);
+    }
+
     @Transactional(readOnly = true)
     public List<ShareCommentResponse> getShareCommentsByNoteId(Long noteId) {
         getOwnedNote(noteId);
