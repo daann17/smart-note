@@ -134,6 +134,23 @@
     </build>
 
     <repositories>
+        <!-- 增加阿里云镜像加速依赖下载 -->
+        <repository>
+            <id>aliyunmaven</id>
+            <name>aliyun</name>
+            <url>https://maven.aliyun.com/repository/public</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+        <repository>
+            <id>aliyunmaven-spring</id>
+            <name>aliyun-spring</name>
+            <url>https://maven.aliyun.com/repository/spring</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
         <repository>
             <id>spring-milestones</id>
             <name>Spring Milestones</name>
@@ -141,17 +158,6 @@
             <snapshots>
                 <enabled>false</enabled>
             </snapshots>
-        </repository>
-        <!-- 增加阿里云镜像加速依赖下载 -->
-        <repository>
-            <id>aliyunmaven</id>
-            <name>aliyun</name>
-            <url>https://maven.aliyun.com/repository/public</url>
-        </repository>
-        <repository>
-            <id>aliyunmaven-spring</id>
-            <name>aliyun-spring</name>
-            <url>https://maven.aliyun.com/repository/spring</url>
         </repository>
     </repositories>
 </project>
