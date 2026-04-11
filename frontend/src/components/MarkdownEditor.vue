@@ -1727,20 +1727,58 @@ const handleFileInputChange = async (event: Event) => {
   target.value = '';
 };
 
+const isFileDragEvent = (event: DragEvent) => {
+  const transfer = event.dataTransfer;
+  if (!transfer) {
+    return false;
+  }
+
+  if (transfer.files && transfer.files.length > 0) {
+    return true;
+  }
+
+  if (transfer.items && Array.from(transfer.items).some((item) => item.kind === 'file')) {
+    return true;
+  }
+
+  const types = Array.from(transfer.types ?? []);
+  return types.includes('Files') || types.includes('application/x-moz-file');
+};
+
+const resetDraggingFiles = () => {
+  draggingFiles.value = false;
+};
+
 const handleDragOver = (event: DragEvent) => {
+  if (!isFileDragEvent(event)) {
+    return;
+  }
+
   event.preventDefault();
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'copy';
+  }
   draggingFiles.value = true;
 };
 
 const handleDragLeave = (event: DragEvent) => {
+  if (!draggingFiles.value || !isFileDragEvent(event)) {
+    return;
+  }
+
   if (event.currentTarget === event.target) {
-    draggingFiles.value = false;
+    resetDraggingFiles();
   }
 };
 
 const handleDrop = async (event: DragEvent) => {
+  if (!isFileDragEvent(event)) {
+    resetDraggingFiles();
+    return;
+  }
+
   event.preventDefault();
-  draggingFiles.value = false;
+  resetDraggingFiles();
 
   const files = event.dataTransfer?.files;
   if (files && files.length > 0) {
@@ -1826,6 +1864,10 @@ watch(splitIsDraggable, (enabled) => {
 
 onMounted(async () => {
   try {
+    window.addEventListener('dragend', resetDraggingFiles);
+    window.addEventListener('drop', resetDraggingFiles);
+    window.addEventListener('blur', resetDraggingFiles);
+
     ydoc.value = new Y.Doc();
     yText.value = ydoc.value.getText('content');
     undoManager.value = new Y.UndoManager(yText.value);
@@ -1898,6 +1940,9 @@ onBeforeUnmount(() => {
   }
 
   stopSplitResize();
+  window.removeEventListener('dragend', resetDraggingFiles);
+  window.removeEventListener('drop', resetDraggingFiles);
+  window.removeEventListener('blur', resetDraggingFiles);
   window.removeEventListener('resize', handleWindowResize);
   workspaceResizeObserver?.disconnect();
 
