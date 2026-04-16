@@ -141,14 +141,14 @@ const deleteShareRecord = (shareId: number) => {
         <a-table-column title="过期时间" data-index="expireAt" key="expireAt">
           <template #default="{ text }">
             <span v-if="text">{{ new Date(text).toLocaleString() }}</span>
-            <span class="meta-positive" v-else>永久有效</span>
+            <span v-else class="meta-positive">永久有效</span>
           </template>
         </a-table-column>
 
         <a-table-column title="提取码" data-index="extractionCode" key="extractionCode">
           <template #default="{ text }">
             <span v-if="text">{{ text }}</span>
-            <span class="meta-muted">无</span>
+            <span v-else class="meta-muted">无</span>
           </template>
         </a-table-column>
 

@@ -61,12 +61,32 @@ export interface NoteSearchFilters {
   endDate?: string;
 }
 
+export type NoteExportFormat = 'html' | 'pdf' | 'word';
+
 export const useNoteStore = defineStore('note', () => {
   const notes = ref<Note[]>([]);
   const trashNotes = ref<Note[]>([]);
   const currentNote = ref<Note | null>(null);
   const noteHistories = ref<NoteHistory[]>([]);
   const loading = ref(false);
+
+  const exportConfigs: Record<NoteExportFormat, { path: string; mimeType: string; extension: string }> = {
+    html: {
+      path: 'html',
+      mimeType: 'text/html;charset=utf-8',
+      extension: 'html',
+    },
+    pdf: {
+      path: 'pdf',
+      mimeType: 'application/pdf',
+      extension: 'pdf',
+    },
+    word: {
+      path: 'word',
+      mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      extension: 'docx',
+    },
+  };
 
   const downloadBlob = (data: BlobPart, mimeType: string, fileName: string) => {
     const blob = new Blob([data], { type: mimeType });
@@ -78,6 +98,17 @@ export const useNoteStore = defineStore('note', () => {
     link.click();
     document.body.removeChild(link);
     window.URL.revokeObjectURL(url);
+  };
+
+  const sanitizeExportFileName = (title: string) => {
+    const normalized = title.trim() || 'untitled-note';
+    const sanitized = normalized
+      .replace(/[\\/:*?"<>|]+/g, '_')
+      .replace(/\s+/g, ' ')
+      .replace(/\.+$/g, '')
+      .trim();
+
+    return sanitized || 'untitled-note';
   };
 
   const fetchNotes = async (notebookId: number) => {
@@ -116,8 +147,10 @@ export const useNoteStore = defineStore('note', () => {
       if (currentNote.value?.id === id) {
         currentNote.value = response.data;
       }
+      return response.data as Note;
     } catch (error) {
       // Keep caller-side behavior unchanged.
+      return null;
     }
   };
 
@@ -382,45 +415,20 @@ export const useNoteStore = defineStore('note', () => {
     }
   };
 
-  const exportNoteToMarkdown = async (id: number, title: string) => {
+  const exportNote = async (id: number, title: string, format: NoteExportFormat) => {
     try {
-      const response = await api.get(`/notes/${id}/export/markdown`, {
-        responseType: 'blob',
-      });
-      downloadBlob(response.data, 'text/markdown;charset=utf-8', `${title}.md`);
-      return true;
-    } catch (error) {
-      console.error('Failed to export note', error);
-      return false;
-    }
-  };
-
-  const exportNoteToPdf = async (id: number, title: string) => {
-    try {
-      const response = await api.get(`/notes/${id}/export/pdf`, {
-        responseType: 'blob',
-      });
-      downloadBlob(response.data, 'application/pdf', `${title}.pdf`);
-      return true;
-    } catch (error) {
-      console.error('Failed to export note as PDF', error);
-      return false;
-    }
-  };
-
-  const exportNoteToWord = async (id: number, title: string) => {
-    try {
-      const response = await api.get(`/notes/${id}/export/word`, {
+      const config = exportConfigs[format];
+      const response = await api.get(`/notes/${id}/export/${config.path}`, {
         responseType: 'blob',
       });
       downloadBlob(
         response.data,
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        `${title}.docx`,
+        config.mimeType,
+        `${sanitizeExportFileName(title)}.${config.extension}`,
       );
       return true;
     } catch (error) {
-      console.error('Failed to export note as Word', error);
+      console.error(`Failed to export note as ${format}`, error);
       return false;
     }
   };
@@ -455,8 +463,6 @@ export const useNoteStore = defineStore('note', () => {
     replyToShareComment,
     resolveShareComment,
     deleteShareComment,
-    exportNoteToMarkdown,
-    exportNoteToPdf,
-    exportNoteToWord,
+    exportNote,
   };
 });

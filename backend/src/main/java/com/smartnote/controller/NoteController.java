@@ -167,6 +167,17 @@ public class NoteController {
         );
     }
 
+    @GetMapping("/{id}/export/html")
+    public ResponseEntity<byte[]> exportToHtml(@PathVariable Long id) {
+        Note note = noteService.getNoteById(id);
+        return buildDownloadResponse(
+                noteExportService.exportHtml(note),
+                note.getTitle(),
+                "html",
+                MediaType.parseMediaType("text/html;charset=UTF-8")
+        );
+    }
+
     @GetMapping("/{id}/export/pdf")
     public ResponseEntity<byte[]> exportToPdf(@PathVariable Long id) {
         Note note = noteService.getNoteById(id);

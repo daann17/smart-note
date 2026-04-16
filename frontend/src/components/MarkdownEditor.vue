@@ -825,9 +825,23 @@ const scheduleHtmlEmit = (content: string) => {
   }
 
   htmlEmitTimer = setTimeout(() => {
+    htmlEmitTimer = null;
     emit('update:contentHtml', renderMarkdownContent(content));
   }, 120);
 };
+
+const flushContentHtml = () => {
+  if (htmlEmitTimer) {
+    clearTimeout(htmlEmitTimer);
+    htmlEmitTimer = null;
+  }
+
+  emit('update:contentHtml', renderMarkdownContent(currentContent.value));
+};
+
+defineExpose({
+  flushContentHtml,
+});
 
 const syncContentState = () => {
   const nextValue = yText.value?.toString() ?? '';

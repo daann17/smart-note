@@ -1,7 +1,7 @@
 ﻿<script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { useNoteStore } from '../stores/note';
+import { useNoteStore, type NoteExportFormat } from '../stores/note';
 import { useNotebookStore } from '../stores/notebook';
 import { useTagStore } from '../stores/tag';
 import { useFolderStore } from '../stores/folder';
@@ -10,7 +10,7 @@ import {
   RobotOutlined, MoreOutlined, CopyOutlined, DragOutlined,
   ArrowLeftOutlined, DeleteOutlined, ShareAltOutlined,
   DownloadOutlined, MessageOutlined, FolderOutlined,
-  FolderOpenOutlined, EditOutlined, FolderAddOutlined,
+  FolderOpenOutlined, EditOutlined, FolderAddOutlined, DownOutlined,
 } from '@ant-design/icons-vue';
 import MarkdownEditor from '../components/MarkdownEditor.vue';
 import AIAssistantDrawer from '../components/AIAssistantDrawer.vue';
@@ -27,11 +27,18 @@ const notebookId = ref<number | null>(null);
 const selectedNoteId = ref<number | null>(null);
 const selectedTags = ref<string[]>([]);
 const currentUsername = localStorage.getItem('displayName') || localStorage.getItem('username') || 'Author';
+const markdownEditorRef = ref<{ flushContentHtml?: () => void } | null>(null);
 
 // 自动保存与状态标识
 let autoSaveTimer: any = null;
 const lastSavedTime = ref<string>('');
 const isSwitchingNote = ref<boolean>(false);
+
+const exportFormatLabels: Record<NoteExportFormat, string> = {
+  html: 'HTML',
+  pdf: 'PDF',
+  word: 'Word',
+};
 
 const normalizeRouteId = (value: unknown) => {
   const rawValue = Array.isArray(value) ? value[0] : value;
@@ -159,13 +166,20 @@ watch(
 
 const handleSave = async (isAutoSave = false) => {
   if (noteStore.currentNote) {
-    await noteStore.updateNote(noteStore.currentNote.id, {
+    markdownEditorRef.value?.flushContentHtml?.();
+    const savedNote = await noteStore.updateNote(noteStore.currentNote.id, {
       title: noteStore.currentNote.title,
       content: noteStore.currentNote.content,
       contentHtml: noteStore.currentNote.contentHtml, // 确保发送 HTML
       tags: selectedTags.value, // 发送标签名称列表
       forceHistory: !isAutoSave // 如果是手动保存，强制生成历史版本
     });
+    if (!savedNote) {
+      if (!isAutoSave) {
+        message.error('保存失败，请稍后重试');
+      }
+      return false;
+    }
     // 重新获取标签列表，因为可能有新创建的标签
     await tagStore.fetchTags();
     
@@ -176,7 +190,11 @@ const handleSave = async (isAutoSave = false) => {
     if (!isAutoSave) {
       message.success('保存成功');
     }
+
+    return true;
   }
+
+  return false;
 };
 
 // 监听内容变化自动保存（简单防抖）
@@ -437,57 +455,27 @@ const openCommentArea = () => {
   });
 };
 
-const handleExportMarkdown = async () => {
+const handleExport = async (format: NoteExportFormat) => {
   if (!noteStore.currentNote) return;
-  
-  // 提示用户正在导出
-  const hide = message.loading('正在导出...', 0);
+
+  const formatLabel = exportFormatLabels[format];
+  const hide = message.loading(`正在导出 ${formatLabel}...`, 0);
   try {
-    const success = await noteStore.exportNoteToMarkdown(
-      noteStore.currentNote.id, 
-      noteStore.currentNote.title || '未命名笔记'
-    );
-    if (success) {
-      message.success('导出成功');
-    } else {
-      message.error('导出失败，请重试');
+    const saved = await handleSave(true);
+    if (!saved) {
+      message.error(`导出 ${formatLabel} 前保存失败，请重试`);
+      return;
     }
-  } finally {
-    hide();
-  }
-};
-const handleExportPdf = async () => {
-  if (!noteStore.currentNote) return;
 
-  const hide = message.loading('正在导出...', 0);
-  try {
-    const success = await noteStore.exportNoteToPdf(
+    const success = await noteStore.exportNote(
       noteStore.currentNote.id,
-      noteStore.currentNote.title || '未命名笔记'
+      noteStore.currentNote.title || '未命名笔记',
+      format,
     );
     if (success) {
-      message.success('PDF 导出成功');
+      message.success(`${formatLabel} 导出成功`);
     } else {
-      message.error('PDF 导出失败，请重试');
-    }
-  } finally {
-    hide();
-  }
-};
-
-const handleExportWord = async () => {
-  if (!noteStore.currentNote) return;
-
-  const hide = message.loading('正在导出...', 0);
-  try {
-    const success = await noteStore.exportNoteToWord(
-      noteStore.currentNote.id,
-      noteStore.currentNote.title || '未命名笔记'
-    );
-    if (success) {
-      message.success('Word 导出成功');
-    } else {
-      message.error('Word 导出失败，请重试');
+      message.error(`${formatLabel} 导出失败，请重试`);
     }
   } finally {
     hide();
@@ -800,11 +788,31 @@ const handleDropOnFolder = async (folderId: number | null) => {
             <template #icon><MessageOutlined /></template>
             评论区
           </a-button>
+          <a-dropdown :trigger="['click']">
+            <template #overlay>
+              <a-menu>
+                <a-menu-item key="export-html" @click="handleExport('html')">
+                  <DownloadOutlined /> 导出为 HTML
+                </a-menu-item>
+                <a-menu-item key="export-pdf" @click="handleExport('pdf')">
+                  <DownloadOutlined /> 导出为 PDF
+                </a-menu-item>
+                <a-menu-item key="export-word" @click="handleExport('word')">
+                  <DownloadOutlined /> 导出为 Word
+                </a-menu-item>
+              </a-menu>
+            </template>
+            <a-button type="default" class="editor-action-btn">
+              <template #icon><DownloadOutlined /></template>
+              导出
+              <DownOutlined style="font-size: 12px; margin-left: 4px;" />
+            </a-button>
+          </a-dropdown>
           <a-button type="primary" class="editor-action-btn" @click="() => handleSave(false)">
             <template #icon><SaveOutlined /></template>
             保存
           </a-button>
-          <a-dropdown>
+          <a-dropdown :trigger="['click']">
             <template #overlay>
               <a-menu>
                 <a-menu-item key="move" @click="handleOpenMoveCopyModal('move')">
@@ -812,15 +820,6 @@ const handleDropOnFolder = async (folderId: number | null) => {
                 </a-menu-item>
                 <a-menu-item key="copy" @click="handleOpenMoveCopyModal('copy')">
                   <CopyOutlined /> 复制到...
-                </a-menu-item>
-                <a-menu-item key="export" @click="handleExportMarkdown">
-                  <DownloadOutlined /> 导出为 Markdown
-                </a-menu-item>
-                <a-menu-item key="export-pdf" @click="handleExportPdf">
-                  <DownloadOutlined /> 导出为 PDF
-                </a-menu-item>
-                <a-menu-item key="export-word" @click="handleExportWord">
-                  <DownloadOutlined /> 导出为 Word
                 </a-menu-item>
                 <a-menu-divider />
                 <a-menu-item key="delete" @click="handleDeleteNote" style="color: #ff4d4f;">
@@ -864,6 +863,7 @@ const handleDropOnFolder = async (folderId: number | null) => {
       </div>
       <div class="editor-content">
         <MarkdownEditor
+          ref="markdownEditorRef"
           :key="`editor-${noteStore.currentNote.id}-${editorKey}`"
           v-model="noteStore.currentNote.content"
           :noteId="noteStore.currentNote.id"
@@ -1284,4 +1284,3 @@ const handleDropOnFolder = async (folderId: number | null) => {
   }
 }
 </style>
-

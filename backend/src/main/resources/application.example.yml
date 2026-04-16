@@ -34,3 +34,4 @@ spring:
 smartnote:
   export:
     pdf-font-path: ${SMARTNOTE_EXPORT_PDF_FONT_PATH:}
+    pdf-font-resource: ${SMARTNOTE_EXPORT_PDF_FONT_RESOURCE:}
