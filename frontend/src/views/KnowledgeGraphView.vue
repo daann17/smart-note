@@ -78,11 +78,17 @@ type RenderLink = GraphLink & {
 type DragState = {
   nodeId: string;
   pointerId: number;
+  surface: 'main' | 'canvas';
   offsetX: number;
   offsetY: number;
   moved: boolean;
   lastX: number;
   lastY: number;
+};
+
+type SelectNodeOptions = {
+  reveal?: boolean;
+  behavior?: ScrollBehavior;
 };
 
 const TYPE_META: Record<GraphNodeType, { label: string; color: string; soft: string; anchor: [number, number] }> = {
@@ -102,6 +108,8 @@ const RELATION_TYPE_ORDER: GraphLinkType[] = ['contains', 'tagged', 'related'];
 const router = useRouter();
 const graphHostRef = ref<HTMLElement | null>(null);
 const svgRef = ref<SVGSVGElement | null>(null);
+const canvasHostRef = ref<HTMLElement | null>(null);
+const canvasSvgRef = ref<SVGSVGElement | null>(null);
 const loading = ref(true);
 const refreshing = ref(false);
 const graph = ref<GraphResponse | null>(null);
@@ -109,9 +117,14 @@ const selectedNodeId = ref<string | null>(null);
 const query = ref('');
 const showRelatedLinks = ref(true);
 const activeRelationFilter = ref<RelationFilterType>('all');
+const canvasOverviewOpen = ref(false);
 const viewport = reactive({
   width: 1120,
   height: 700,
+});
+const hostScroll = reactive({
+  left: 0,
+  top: 0,
 });
 const typeFilters = reactive<Record<GraphNodeType, boolean>>({
   notebook: true,
@@ -126,10 +139,16 @@ const pinnedNodeIds = ref<Set<string>>(new Set());
 
 let resizeObserver: ResizeObserver | null = null;
 let reboundAnimationFrame: number | null = null;
+let dragAnimationFrame: number | null = null;
+let pendingDragPoint: { pointerId: number; x: number; y: number } | null = null;
+let renderedNodeMap = new Map<string, RenderNode>();
+let nodeNeighborLinksMap = new Map<string, RenderLink[]>();
 const VIEWPORT_EPSILON = 2;
 const DRAG_THRESHOLD = 6;
 const GRAPH_PADDING = 44;
 const REBOUND_DURATION_MS = 260;
+const MAX_CANVAS_WIDTH = 3200;
+const MAX_CANVAS_HEIGHT = 2400;
 
 const summary = computed<GraphSummary>(() => graph.value?.summary ?? {
   notebookCount: 0,
@@ -138,6 +157,28 @@ const summary = computed<GraphSummary>(() => graph.value?.summary ?? {
   relationCount: 0,
   relatedNoteCount: 0,
 });
+
+const canvasSize = computed(() => {
+  const nodeCount = filteredGraph.value.nodes.length;
+  const linkCount = filteredGraph.value.links.length;
+  const nodePressure = Math.max(nodeCount - 14, 0);
+  const spreadBands = Math.max(Math.ceil(nodePressure / 10), 0);
+  const graphPressure = Math.max(linkCount - nodeCount, 0);
+  const width = viewport.width + (spreadBands * 220) + Math.round(Math.sqrt(Math.max(nodeCount, 1)) * 84) + (graphPressure * 6);
+  const height = viewport.height + (spreadBands * 170) + Math.round(Math.sqrt(Math.max(nodeCount, 1)) * 70) + (graphPressure * 4);
+
+  return {
+    width: Math.min(MAX_CANVAS_WIDTH, Math.max(viewport.width, width)),
+    height: Math.min(MAX_CANVAS_HEIGHT, Math.max(viewport.height, height)),
+  };
+});
+
+const canvasSizeLabel = computed(() => `${canvasSize.value.width} × ${canvasSize.value.height}`);
+
+const canvasHasOverflow = computed(() => (
+  canvasSize.value.width - viewport.width > VIEWPORT_EPSILON
+  || canvasSize.value.height - viewport.height > VIEWPORT_EPSILON
+));
 
 const allowedLinks = computed(() => {
   if (!graph.value) {
@@ -368,8 +409,8 @@ const updateViewport = () => {
 };
 
 const getAnchor = (type: GraphNodeType) => ({
-  x: viewport.width * TYPE_META[type].anchor[0],
-  y: viewport.height * TYPE_META[type].anchor[1],
+  x: canvasSize.value.width * TYPE_META[type].anchor[0],
+  y: canvasSize.value.height * TYPE_META[type].anchor[1],
 });
 
 const hashString = (value: string) => {
@@ -388,9 +429,29 @@ const clamp = (value: number, min: number, max: number) => (
 
 const isNodePinned = (nodeId: string) => pinnedNodeIds.value.has(nodeId);
 
-const commitGraphMutation = () => {
-  renderedNodes.value = [...renderedNodes.value];
-  renderedLinks.value = [...renderedLinks.value];
+const syncRenderedGraphCache = () => {
+  const nodes = renderedNodes.value;
+  const links = renderedLinks.value;
+  renderedNodeMap = new Map(nodes.map((node) => [node.id, node]));
+
+  const nextNeighborLinksMap = new Map<string, RenderLink[]>();
+  for (const link of links) {
+    const sourceLinks = nextNeighborLinksMap.get(link.source);
+    if (sourceLinks) {
+      sourceLinks.push(link);
+    } else {
+      nextNeighborLinksMap.set(link.source, [link]);
+    }
+
+    const targetLinks = nextNeighborLinksMap.get(link.target);
+    if (targetLinks) {
+      targetLinks.push(link);
+    } else {
+      nextNeighborLinksMap.set(link.target, [link]);
+    }
+  }
+
+  nodeNeighborLinksMap = nextNeighborLinksMap;
 };
 
 const stopReboundAnimation = () => {
@@ -400,8 +461,21 @@ const stopReboundAnimation = () => {
   }
 };
 
-const toSvgPoint = (event: PointerEvent) => {
-  const svg = svgRef.value;
+const stopDragAnimation = () => {
+  if (dragAnimationFrame !== null) {
+    cancelAnimationFrame(dragAnimationFrame);
+    dragAnimationFrame = null;
+  }
+
+  pendingDragPoint = null;
+};
+
+const getSvgBySurface = (surface: 'main' | 'canvas') => (
+  surface === 'canvas' ? canvasSvgRef.value : svgRef.value
+);
+
+const toSvgPoint = (event: PointerEvent, surface: 'main' | 'canvas' = 'main') => {
+  const svg = getSvgBySurface(surface);
   if (!svg) {
     return null;
   }
@@ -412,8 +486,8 @@ const toSvgPoint = (event: PointerEvent) => {
   }
 
   return {
-    x: ((event.clientX - rect.left) / rect.width) * viewport.width,
-    y: ((event.clientY - rect.top) / rect.height) * viewport.height,
+    x: ((event.clientX - rect.left) / rect.width) * canvasSize.value.width,
+    y: ((event.clientY - rect.top) / rect.height) * canvasSize.value.height,
   };
 };
 
@@ -480,13 +554,24 @@ const buildLayout = () => {
 };
 
 const rebuildLayout = () => {
+  const hadRenderedNodes = renderedNodes.value.length > 0;
   const { nextNodes, nextLinks, nodeMap } = buildLayout();
   renderedNodes.value = nextNodes;
   renderedLinks.value = nextLinks;
+  syncRenderedGraphCache();
 
   if (selectedNodeId.value && !nodeMap.has(selectedNodeId.value)) {
     selectedNodeId.value = nextNodes[0]?.id ?? null;
   }
+
+  nextTick().then(() => {
+    if (!hadRenderedNodes) {
+      centerViewportOnNode(selectedNodeId.value, 'auto');
+      return;
+    }
+
+    revealNodeInViewport(selectedNodeId.value, 'auto');
+  });
 };
 
 const simulateLayout = (nodes: RenderNode[], links: RenderLink[]) => {
@@ -563,14 +648,148 @@ const simulateLayout = (nodes: RenderNode[], links: RenderLink[]) => {
       node.vy += (anchor.y - node.y) * 0.003;
       node.vx *= 0.82;
       node.vy *= 0.82;
-      node.x = clamp(node.x + node.vx, GRAPH_PADDING, viewport.width - GRAPH_PADDING);
-      node.y = clamp(node.y + node.vy, GRAPH_PADDING, viewport.height - GRAPH_PADDING);
+      node.x = clamp(node.x + node.vx, GRAPH_PADDING, canvasSize.value.width - GRAPH_PADDING);
+      node.y = clamp(node.y + node.vy, GRAPH_PADDING, canvasSize.value.height - GRAPH_PADDING);
     }
   }
 };
 
-const selectNode = (nodeId: string) => {
+const handleGraphHostScroll = () => {
+  const host = graphHostRef.value;
+  if (!host) {
+    hostScroll.left = 0;
+    hostScroll.top = 0;
+    return;
+  }
+
+  hostScroll.left = host.scrollLeft;
+  hostScroll.top = host.scrollTop;
+};
+
+const syncCanvasViewportFromMain = () => {
+  const host = canvasHostRef.value;
+  const mainHost = graphHostRef.value;
+  if (!host) {
+    return;
+  }
+
+  if (mainHost) {
+    const maxLeft = Math.max(canvasSize.value.width - host.clientWidth, 0);
+    const maxTop = Math.max(canvasSize.value.height - host.clientHeight, 0);
+    host.scrollTo({
+      left: clamp(mainHost.scrollLeft, 0, maxLeft),
+      top: clamp(mainHost.scrollTop, 0, maxTop),
+      behavior: 'auto',
+    });
+    return;
+  }
+
+  centerViewportOnNode(selectedNodeId.value, 'auto', 'canvas');
+};
+
+const scrollGraphHostTo = (
+  left: number,
+  top: number,
+  behavior: ScrollBehavior = 'auto',
+  surface: 'main' | 'canvas' = 'main',
+) => {
+  const host = surface === 'canvas' ? canvasHostRef.value : graphHostRef.value;
+  if (!host) {
+    return;
+  }
+
+  const maxLeft = Math.max(canvasSize.value.width - host.clientWidth, 0);
+  const maxTop = Math.max(canvasSize.value.height - host.clientHeight, 0);
+  const nextLeft = clamp(left, 0, maxLeft);
+  const nextTop = clamp(top, 0, maxTop);
+
+  host.scrollTo({
+    left: nextLeft,
+    top: nextTop,
+    behavior,
+  });
+  if (surface === 'main') {
+    hostScroll.left = nextLeft;
+    hostScroll.top = nextTop;
+  }
+};
+
+const centerViewportOnPoint = (
+  x: number,
+  y: number,
+  behavior: ScrollBehavior = 'auto',
+  surface: 'main' | 'canvas' = 'main',
+) => {
+  const host = surface === 'canvas' ? canvasHostRef.value : graphHostRef.value;
+  if (!host) {
+    return;
+  }
+
+  scrollGraphHostTo(
+    x - (host.clientWidth / 2),
+    y - (host.clientHeight / 2),
+    behavior,
+    surface,
+  );
+};
+
+const centerViewportOnNode = (
+  nodeId: string | null,
+  behavior: ScrollBehavior = 'auto',
+  surface: 'main' | 'canvas' = 'main',
+) => {
+  const node = nodeId ? renderedNodeMap.get(nodeId) : null;
+  if (!node) {
+    centerViewportOnPoint(canvasSize.value.width / 2, canvasSize.value.height / 2, behavior, surface);
+    return;
+  }
+
+  centerViewportOnPoint(node.x, node.y, behavior, surface);
+};
+
+const revealNodeInViewport = (
+  nodeId: string | null,
+  behavior: ScrollBehavior = 'smooth',
+  surface: 'main' | 'canvas' = 'main',
+) => {
+  const host = surface === 'canvas' ? canvasHostRef.value : graphHostRef.value;
+  const node = nodeId ? renderedNodeMap.get(nodeId) : null;
+  if (!host || !node) {
+    if (surface === 'main') {
+      scrollGraphHostTo(hostScroll.left, hostScroll.top, behavior, surface);
+    }
+    return;
+  }
+
+  const padding = 120;
+  const visibleLeft = host.scrollLeft;
+  const visibleTop = host.scrollTop;
+  const visibleRight = visibleLeft + host.clientWidth;
+  const visibleBottom = visibleTop + host.clientHeight;
+
+  if (
+    node.x >= visibleLeft + padding
+    && node.x <= visibleRight - padding
+    && node.y >= visibleTop + padding
+    && node.y <= visibleBottom - padding
+  ) {
+    if (surface === 'main') {
+      handleGraphHostScroll();
+    }
+    return;
+  }
+
+  centerViewportOnPoint(node.x, node.y, behavior, surface);
+};
+
+const selectNode = (nodeId: string, options: SelectNodeOptions = {}) => {
   selectedNodeId.value = nodeId;
+
+  if (options.reveal) {
+    nextTick().then(() => {
+      revealNodeInViewport(nodeId, options.behavior ?? 'smooth', canvasOverviewOpen.value ? 'canvas' : 'main');
+    });
+  }
 };
 
 const togglePinSelectedNode = () => {
@@ -596,11 +815,13 @@ const resetLayout = () => {
 
 const startReboundAnimation = () => {
   stopReboundAnimation();
+  stopDragAnimation();
 
   const { nextNodes, nextLinks } = buildLayout();
   if (renderedNodes.value.length !== nextNodes.length) {
     renderedNodes.value = nextNodes;
     renderedLinks.value = nextLinks;
+    syncRenderedGraphCache();
     return;
   }
 
@@ -625,8 +846,6 @@ const startReboundAnimation = () => {
       node.vy = 0;
     }
 
-    commitGraphMutation();
-
     if (progress < 1) {
       reboundAnimationFrame = requestAnimationFrame(tick);
       return;
@@ -635,6 +854,7 @@ const startReboundAnimation = () => {
     reboundAnimationFrame = null;
     renderedNodes.value = nextNodes;
     renderedLinks.value = nextLinks;
+    syncRenderedGraphCache();
   };
 
   reboundAnimationFrame = requestAnimationFrame(tick);
@@ -656,16 +876,18 @@ const handleNodeOpen = (path: string | null) => {
   router.push(path);
 };
 
-const handleNodePointerDown = (node: RenderNode, event: PointerEvent) => {
-  const point = toSvgPoint(event);
+const handleNodePointerDown = (node: RenderNode, event: PointerEvent, surface: 'main' | 'canvas' = 'main') => {
+  const point = toSvgPoint(event, surface);
   if (!point) {
     return;
   }
 
   stopReboundAnimation();
+  stopDragAnimation();
   dragState.value = {
     nodeId: node.id,
     pointerId: event.pointerId,
+    surface,
     offsetX: node.x - point.x,
     offsetY: node.y - point.y,
     moved: false,
@@ -680,15 +902,14 @@ const applyNeighborInfluence = (nodeId: string, deltaX: number, deltaY: number) 
     return;
   }
 
-  const nodeMap = new Map(renderedNodes.value.map((node) => [node.id, node]));
+  const adjacentLinks = nodeNeighborLinksMap.get(nodeId);
+  if (!adjacentLinks?.length) {
+    return;
+  }
 
-  for (const link of renderedLinks.value) {
-    if (link.source !== nodeId && link.target !== nodeId) {
-      continue;
-    }
-
+  for (const link of adjacentLinks) {
     const otherNodeId = link.source === nodeId ? link.target : link.source;
-    const otherNode = nodeMap.get(otherNodeId);
+    const otherNode = renderedNodeMap.get(otherNodeId);
 
     if (!otherNode || otherNode.pinned) {
       continue;
@@ -700,32 +921,32 @@ const applyNeighborInfluence = (nodeId: string, deltaX: number, deltaY: number) 
         ? 0.22
         : 0.18;
 
-    otherNode.x = clamp(otherNode.x + (deltaX * influence), GRAPH_PADDING, viewport.width - GRAPH_PADDING);
-    otherNode.y = clamp(otherNode.y + (deltaY * influence), GRAPH_PADDING, viewport.height - GRAPH_PADDING);
+    otherNode.x = clamp(otherNode.x + (deltaX * influence), GRAPH_PADDING, canvasSize.value.width - GRAPH_PADDING);
+    otherNode.y = clamp(otherNode.y + (deltaY * influence), GRAPH_PADDING, canvasSize.value.height - GRAPH_PADDING);
     otherNode.vx = 0;
     otherNode.vy = 0;
   }
 };
 
-const handlePointerMove = (event: PointerEvent) => {
+const flushPendingDragPoint = () => {
+  dragAnimationFrame = null;
+
   const currentDragState = dragState.value;
-  if (!currentDragState || currentDragState.pointerId !== event.pointerId) {
+  const point = pendingDragPoint;
+  pendingDragPoint = null;
+
+  if (!currentDragState || !point || currentDragState.pointerId !== point.pointerId) {
     return;
   }
 
-  const point = toSvgPoint(event);
-  if (!point) {
-    return;
-  }
-
-  const node = renderedNodes.value.find((item) => item.id === currentDragState.nodeId);
+  const node = renderedNodeMap.get(currentDragState.nodeId);
   if (!node) {
     dragState.value = null;
     return;
   }
 
-  const nextX = clamp(point.x + currentDragState.offsetX, GRAPH_PADDING, viewport.width - GRAPH_PADDING);
-  const nextY = clamp(point.y + currentDragState.offsetY, GRAPH_PADDING, viewport.height - GRAPH_PADDING);
+  const nextX = clamp(point.x + currentDragState.offsetX, GRAPH_PADDING, canvasSize.value.width - GRAPH_PADDING);
+  const nextY = clamp(point.y + currentDragState.offsetY, GRAPH_PADDING, canvasSize.value.height - GRAPH_PADDING);
   const deltaX = nextX - currentDragState.lastX;
   const deltaY = nextY - currentDragState.lastY;
 
@@ -743,7 +964,32 @@ const handlePointerMove = (event: PointerEvent) => {
   currentDragState.lastX = nextX;
   currentDragState.lastY = nextY;
   applyNeighborInfluence(node.id, deltaX, deltaY);
-  commitGraphMutation();
+
+  if (pendingDragPoint && dragState.value?.pointerId === currentDragState.pointerId) {
+    dragAnimationFrame = requestAnimationFrame(flushPendingDragPoint);
+  }
+};
+
+const handlePointerMove = (event: PointerEvent) => {
+  const currentDragState = dragState.value;
+  if (!currentDragState || currentDragState.pointerId !== event.pointerId) {
+    return;
+  }
+
+  const point = toSvgPoint(event, currentDragState.surface);
+  if (!point) {
+    return;
+  }
+
+  pendingDragPoint = {
+    pointerId: event.pointerId,
+    x: point.x,
+    y: point.y,
+  };
+
+  if (dragAnimationFrame === null) {
+    dragAnimationFrame = requestAnimationFrame(flushPendingDragPoint);
+  }
 };
 
 const endDrag = (pointerId: number) => {
@@ -751,6 +997,8 @@ const endDrag = (pointerId: number) => {
   if (!currentDragState || currentDragState.pointerId !== pointerId) {
     return;
   }
+
+  stopDragAnimation();
 
   const shouldSuppressClick = currentDragState.moved;
   dragState.value = null;
@@ -807,9 +1055,25 @@ watch(
   },
 );
 
+watch(
+  () => canvasOverviewOpen.value,
+  (open) => {
+    if (!open) {
+      return;
+    }
+
+    nextTick().then(() => {
+      requestAnimationFrame(() => {
+        syncCanvasViewportFromMain();
+      });
+    });
+  },
+);
+
 onMounted(async () => {
   await nextTick();
   updateViewport();
+  handleGraphHostScroll();
 
   if (graphHostRef.value) {
     resizeObserver = new ResizeObserver(() => {
@@ -827,6 +1091,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopReboundAnimation();
+  stopDragAnimation();
   resizeObserver?.disconnect();
   window.removeEventListener('pointermove', handlePointerMove);
   window.removeEventListener('pointerup', handlePointerUp);
@@ -943,7 +1208,18 @@ onBeforeUnmount(() => {
             <p>点击节点查看详情，双击笔记或笔记本节点可直接跳转。</p>
           </div>
 
-          <div class="legend">
+          <div class="stage-tools">
+            <div class="canvas-meta">
+              <span>{{ canvasHasOverflow ? '动态画布' : '当前画布' }}</span>
+              <strong>{{ canvasSizeLabel }}</strong>
+            </div>
+
+            <a-button class="canvas-entry-btn" @click="canvasOverviewOpen = true">
+              <template #icon><ApartmentOutlined /></template>
+              进入画布
+            </a-button>
+
+            <div class="legend">
             <span class="legend-item">
               <i class="legend-dot notebook"></i>
               笔记本
@@ -960,10 +1236,16 @@ onBeforeUnmount(() => {
               <i class="legend-line related"></i>
               共同标签
             </span>
+            </div>
           </div>
         </div>
 
-        <div ref="graphHostRef" class="graph-host" :class="{ dragging: Boolean(dragState) }">
+        <div
+          ref="graphHostRef"
+          class="graph-host"
+          :class="{ dragging: Boolean(dragState) }"
+          @scroll="handleGraphHostScroll"
+        >
           <div v-if="loading" class="state-panel">
             <a-spin size="large" />
             <span>正在生成知识图谱...</span>
@@ -973,13 +1255,19 @@ onBeforeUnmount(() => {
             <a-empty description="当前筛选条件下没有可展示的图谱节点" />
           </div>
 
-          <svg
-            v-else
-            ref="svgRef"
-            class="graph-svg"
-            :viewBox="`0 0 ${viewport.width} ${viewport.height}`"
-            preserveAspectRatio="xMidYMid meet"
-          >
+          <template v-else>
+            <div class="graph-viewport-badge">
+              <span>{{ canvasHasOverflow ? '当前视图只展示完整画布的一部分' : '当前视图已经完整显示画布' }}</span>
+              <strong>{{ canvasSizeLabel }}</strong>
+            </div>
+
+            <svg
+              ref="svgRef"
+              class="graph-svg graph-main-svg"
+              :style="{ width: `${canvasSize.width}px`, height: `${canvasSize.height}px` }"
+              :viewBox="`0 0 ${canvasSize.width} ${canvasSize.height}`"
+              preserveAspectRatio="xMidYMid meet"
+            >
             <g class="link-layer">
               <line
                 v-for="link in renderedLinks"
@@ -1032,7 +1320,8 @@ onBeforeUnmount(() => {
                 </text>
               </g>
             </g>
-          </svg>
+            </svg>
+          </template>
         </div>
       </section>
 
@@ -1136,7 +1425,7 @@ onBeforeUnmount(() => {
                   :key="`${link.type}-${link.source}-${link.target}`"
                   type="button"
                   class="related-item"
-                  @click="link.otherNode && selectNode(link.otherNode.id)"
+                  @click="link.otherNode && selectNode(link.otherNode.id, { reveal: true })"
                 >
                   <span class="related-name">{{ link.otherNode?.label || '未命名节点' }}</span>
                   <span class="related-meta">{{ LINK_META[link.type].label }} · {{ link.label }}</span>
@@ -1154,6 +1443,94 @@ onBeforeUnmount(() => {
         </template>
       </aside>
     </div>
+
+    <a-modal
+      v-model:open="canvasOverviewOpen"
+      class="graph-canvas-modal"
+      :footer="null"
+      width="92vw"
+      centered
+    >
+      <template #title>
+        <div class="canvas-modal-title">
+          <span>扩展画布</span>
+          <span class="canvas-modal-size">{{ canvasSizeLabel }}</span>
+        </div>
+      </template>
+
+      <div class="canvas-modal-body">
+        <p class="canvas-modal-tip">
+          这里提供更大的可视区域来查看知识图谱。你可以直接在这个画布里滚动、拖拽节点、点击节点查看详情，双击节点也会保持原有跳转行为。
+        </p>
+
+        <div
+          ref="canvasHostRef"
+          class="canvas-overview-shell canvas-modal-host"
+          :class="{ dragging: Boolean(dragState) }"
+        >
+          <svg
+            ref="canvasSvgRef"
+            class="graph-svg graph-main-svg graph-canvas-svg"
+            :style="{ width: `${canvasSize.width}px`, height: `${canvasSize.height}px` }"
+            :viewBox="`0 0 ${canvasSize.width} ${canvasSize.height}`"
+            preserveAspectRatio="xMidYMid meet"
+          >
+            <g class="link-layer">
+              <line
+                v-for="link in renderedLinks"
+                :key="`canvas-${link.type}-${link.source}-${link.target}`"
+                class="graph-link"
+                :class="[link.type, { dimmed: isLinkDimmed(link) }]"
+                :x1="link.sourceNode.x"
+                :y1="link.sourceNode.y"
+                :x2="link.targetNode.x"
+                :y2="link.targetNode.y"
+                :stroke="LINK_META[link.type].color"
+                :stroke-dasharray="LINK_META[link.type].dash"
+                :stroke-width="link.type === 'related' ? Math.min(1.4 + link.weight * 0.6, 4.4) : 1.6"
+              />
+            </g>
+
+            <g class="node-layer">
+              <g
+                v-for="node in renderedNodes"
+                :key="`canvas-${node.id}`"
+                class="graph-node"
+                :class="[node.type, { selected: node.id === selectedNodeId, dragging: dragState?.nodeId === node.id }]"
+                :style="{ opacity: nodeOpacity(node) }"
+                :transform="`translate(${node.x}, ${node.y})`"
+                @pointerdown.stop.prevent="handleNodePointerDown(node, $event, 'canvas')"
+                @click="handleNodeClick(node.id)"
+                @dblclick="handleNodeOpen(node.path)"
+              >
+                <circle
+                  class="node-halo"
+                  :r="node.size + 7"
+                  :fill="TYPE_META[node.type].soft"
+                />
+                <circle
+                  class="node-core"
+                  :r="node.size"
+                  :fill="TYPE_META[node.type].color"
+                />
+                <circle
+                  v-if="node.id === selectedNodeId"
+                  class="node-ring"
+                  :r="node.size + 4"
+                />
+                <text
+                  class="node-label"
+                  :y="node.size + 18"
+                  text-anchor="middle"
+                >
+                  {{ node.label.length > 14 ? `${node.label.slice(0, 14)}…` : node.label }}
+                </text>
+              </g>
+            </g>
+          </svg>
+        </div>
+      </div>
+    </a-modal>
   </div>
 </template>
 
@@ -1361,6 +1738,34 @@ onBeforeUnmount(() => {
   font-size: 13px;
 }
 
+.stage-tools {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.canvas-meta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  color: #64748b;
+  font-size: 12px;
+}
+
+.canvas-meta strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.canvas-entry-btn {
+  border-radius: 999px;
+}
+
 .legend {
   display: flex;
   align-items: center;
@@ -1415,22 +1820,62 @@ onBeforeUnmount(() => {
   min-height: 520px;
   margin: 16px;
   border-radius: 24px;
-  overflow: hidden;
+  overflow: auto;
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
   background:
     radial-gradient(circle at center, rgba(37, 99, 235, 0.05), transparent 36%),
     linear-gradient(180deg, #f8fbff 0%, #f5f8fc 100%);
   border: 1px solid rgba(148, 163, 184, 0.14);
 }
 
-.graph-host.dragging {
+.graph-host.dragging,
+.canvas-modal-host.dragging {
   cursor: grabbing;
+}
+
+.graph-host.dragging .graph-link,
+.graph-host.dragging .graph-node,
+.canvas-modal-host.dragging .graph-link,
+.canvas-modal-host.dragging .graph-node {
+  transition: none;
+}
+
+.graph-host.dragging .node-core,
+.canvas-modal-host.dragging .node-core {
+  filter: none;
 }
 
 .graph-svg {
   display: block;
-  width: 100%;
-  height: 100%;
   touch-action: none;
+}
+
+.graph-main-svg {
+  min-width: 100%;
+  min-height: 100%;
+}
+
+.graph-viewport-badge {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  box-shadow: 0 16px 24px rgba(15, 23, 42, 0.08);
+  color: #475569;
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.graph-viewport-badge strong {
+  color: #0f172a;
 }
 
 .state-panel {
@@ -1907,6 +2352,21 @@ onBeforeUnmount(() => {
   color: var(--sn-text-soft);
 }
 
+.canvas-meta {
+  background: var(--sn-bg-soft);
+  border-color: var(--sn-border);
+  color: var(--sn-text-soft);
+}
+
+.canvas-meta strong {
+  color: var(--sn-text);
+}
+
+.canvas-entry-btn {
+  border-color: var(--sn-border);
+  background: #ffffff;
+}
+
 .graph-host {
   margin: 18px;
   border-radius: 18px;
@@ -1914,6 +2374,16 @@ onBeforeUnmount(() => {
     radial-gradient(circle at top left, rgba(0, 117, 222, 0.04), transparent 24%),
     linear-gradient(180deg, #fbfaf8 0%, #f6f5f4 100%);
   border: 1px solid var(--sn-border);
+}
+
+.graph-viewport-badge {
+  background: rgba(255, 255, 255, 0.94);
+  border-color: var(--sn-border);
+  color: var(--sn-text-soft);
+}
+
+.graph-viewport-badge strong {
+  color: var(--sn-text);
 }
 
 .state-panel {
@@ -2065,6 +2535,66 @@ onBeforeUnmount(() => {
   background: #ffffff;
 }
 
+.canvas-modal-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.canvas-modal-size {
+  color: var(--sn-text-soft);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.canvas-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.canvas-modal-tip {
+  margin: 0;
+  color: var(--sn-text-soft);
+  line-height: 1.7;
+}
+
+.canvas-overview-shell {
+  overflow: hidden;
+  border-radius: 18px;
+  border: 1px solid var(--sn-border);
+  background:
+    radial-gradient(circle at top left, rgba(0, 117, 222, 0.04), transparent 24%),
+    linear-gradient(180deg, #fbfaf8 0%, #f6f5f4 100%);
+}
+
+.canvas-modal-host {
+  overflow: auto;
+  height: min(82vh, 860px);
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
+}
+
+.graph-canvas-svg {
+  min-width: 100%;
+  min-height: 100%;
+}
+
+:deep(.graph-canvas-modal .ant-modal-content) {
+  border-radius: 22px;
+  overflow: hidden;
+}
+
+:deep(.graph-canvas-modal .ant-modal-header) {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+:deep(.graph-canvas-modal .ant-modal-body) {
+  padding-top: 18px;
+}
+
 .related-meta,
 .empty-tip,
 .empty-detail p {
@@ -2100,6 +2630,11 @@ onBeforeUnmount(() => {
     flex-direction: column;
   }
 
+  .stage-tools {
+    width: 100%;
+    align-items: flex-start;
+  }
+
   .summary-grid,
   .detail-grid {
     grid-template-columns: 1fr;
@@ -2107,6 +2642,16 @@ onBeforeUnmount(() => {
 
   .graph-host {
     margin: 14px;
+  }
+
+  .graph-viewport-badge {
+    left: 12px;
+    right: 12px;
+    justify-content: space-between;
+  }
+
+  .canvas-modal-host {
+    height: min(72vh, 620px);
   }
 }
 </style>
