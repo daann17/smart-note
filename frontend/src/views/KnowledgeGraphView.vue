@@ -174,8 +174,6 @@ const canvasSize = computed(() => {
   };
 });
 
-const canvasSizeLabel = computed(() => `${canvasSize.value.width} × ${canvasSize.value.height}`);
-
 const canvasHasOverflow = computed(() => (
   canvasSize.value.width - viewport.width > VIEWPORT_EPSILON
   || canvasSize.value.height - viewport.height > VIEWPORT_EPSILON
@@ -1215,10 +1213,6 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="stage-tools">
-            <div class="canvas-meta">
-              <span>{{ canvasHasOverflow ? '动态画布' : '当前画布' }}</span>
-              <strong>{{ canvasSizeLabel }}</strong>
-            </div>
 
             <a-button class="canvas-entry-btn" @click="canvasOverviewOpen = true">
               <template #icon><ApartmentOutlined /></template>
@@ -1264,7 +1258,6 @@ onBeforeUnmount(() => {
           <template v-else>
             <div class="graph-viewport-badge">
               <span>{{ canvasHasOverflow ? '当前视图只展示完整画布的一部分' : '当前视图已经完整显示画布' }}</span>
-              <strong>{{ canvasSizeLabel }}</strong>
             </div>
 
             <svg
@@ -1460,7 +1453,6 @@ onBeforeUnmount(() => {
       <template #title>
         <div class="canvas-modal-title">
           <span>扩展画布</span>
-          <span class="canvas-modal-size">{{ canvasSizeLabel }}</span>
         </div>
       </template>
 
@@ -1754,18 +1746,12 @@ onBeforeUnmount(() => {
 .canvas-meta {
   display: inline-flex;
   align-items: baseline;
-  gap: 10px;
   padding: 8px 12px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.78);
   border: 1px solid rgba(148, 163, 184, 0.16);
   color: #64748b;
   font-size: 12px;
-}
-
-.canvas-meta strong {
-  color: #0f172a;
-  font-size: 13px;
 }
 
 .canvas-entry-btn {
@@ -1877,7 +1863,6 @@ onBeforeUnmount(() => {
   z-index: 1;
   display: inline-flex;
   align-items: center;
-  gap: 10px;
   padding: 9px 12px;
   border-radius: 14px;
   background: rgba(255, 255, 255, 0.9);
@@ -1886,10 +1871,6 @@ onBeforeUnmount(() => {
   color: #475569;
   font-size: 12px;
   pointer-events: none;
-}
-
-.graph-viewport-badge strong {
-  color: #0f172a;
 }
 
 .state-panel {
@@ -2372,10 +2353,6 @@ onBeforeUnmount(() => {
   color: var(--sn-text-soft);
 }
 
-.canvas-meta strong {
-  color: var(--sn-text);
-}
-
 .canvas-entry-btn {
   border-color: var(--sn-border);
   background: #ffffff;
@@ -2394,10 +2371,6 @@ onBeforeUnmount(() => {
   background: rgba(255, 255, 255, 0.94);
   border-color: var(--sn-border);
   color: var(--sn-text-soft);
-}
-
-.graph-viewport-badge strong {
-  color: var(--sn-text);
 }
 
 .state-panel {
@@ -2562,12 +2535,6 @@ onBeforeUnmount(() => {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-}
-
-.canvas-modal-size {
-  color: var(--sn-text-soft);
-  font-size: 13px;
-  font-weight: 600;
 }
 
 .canvas-modal-body {
