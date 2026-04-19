@@ -134,6 +134,7 @@ const typeFilters = reactive<Record<GraphNodeType, boolean>>({
 const renderedNodes = ref<RenderNode[]>([]);
 const renderedLinks = ref<RenderLink[]>([]);
 const dragState = ref<DragState | null>(null);
+const rebounding = ref(false);
 const suppressNodeClickUntil = ref(0);
 const pinnedNodeIds = ref<Set<string>>(new Set());
 
@@ -459,6 +460,8 @@ const stopReboundAnimation = () => {
     cancelAnimationFrame(reboundAnimationFrame);
     reboundAnimationFrame = null;
   }
+
+  rebounding.value = false;
 };
 
 const stopDragAnimation = () => {
@@ -816,12 +819,14 @@ const resetLayout = () => {
 const startReboundAnimation = () => {
   stopReboundAnimation();
   stopDragAnimation();
+  rebounding.value = true;
 
   const { nextNodes, nextLinks } = buildLayout();
   if (renderedNodes.value.length !== nextNodes.length) {
     renderedNodes.value = nextNodes;
     renderedLinks.value = nextLinks;
     syncRenderedGraphCache();
+    rebounding.value = false;
     return;
   }
 
@@ -855,6 +860,7 @@ const startReboundAnimation = () => {
     renderedNodes.value = nextNodes;
     renderedLinks.value = nextLinks;
     syncRenderedGraphCache();
+    rebounding.value = false;
   };
 
   reboundAnimationFrame = requestAnimationFrame(tick);
@@ -1243,7 +1249,7 @@ onBeforeUnmount(() => {
         <div
           ref="graphHostRef"
           class="graph-host"
-          :class="{ dragging: Boolean(dragState) }"
+          :class="{ dragging: Boolean(dragState), rebounding }"
           @scroll="handleGraphHostScroll"
         >
           <div v-if="loading" class="state-panel">
@@ -1466,7 +1472,7 @@ onBeforeUnmount(() => {
         <div
           ref="canvasHostRef"
           class="canvas-overview-shell canvas-modal-host"
-          :class="{ dragging: Boolean(dragState) }"
+          :class="{ dragging: Boolean(dragState), rebounding }"
         >
           <svg
             ref="canvasSvgRef"
@@ -1830,19 +1836,27 @@ onBeforeUnmount(() => {
 }
 
 .graph-host.dragging,
-.canvas-modal-host.dragging {
+.graph-host.rebounding,
+.canvas-modal-host.dragging,
+.canvas-modal-host.rebounding {
   cursor: grabbing;
 }
 
 .graph-host.dragging .graph-link,
 .graph-host.dragging .graph-node,
+.graph-host.rebounding .graph-link,
+.graph-host.rebounding .graph-node,
 .canvas-modal-host.dragging .graph-link,
-.canvas-modal-host.dragging .graph-node {
+.canvas-modal-host.dragging .graph-node,
+.canvas-modal-host.rebounding .graph-link,
+.canvas-modal-host.rebounding .graph-node {
   transition: none;
 }
 
 .graph-host.dragging .node-core,
-.canvas-modal-host.dragging .node-core {
+.graph-host.rebounding .node-core,
+.canvas-modal-host.dragging .node-core,
+.canvas-modal-host.rebounding .node-core {
   filter: none;
 }
 
@@ -2397,6 +2411,14 @@ onBeforeUnmount(() => {
 
 .graph-node:hover .node-core {
   filter: drop-shadow(0 18px 30px rgba(0, 0, 0, 0.14));
+}
+
+.graph-host.rebounding .graph-node:hover .node-core,
+.canvas-modal-host.rebounding .graph-node:hover .node-core,
+.graph-host.rebounding .graph-node .node-core,
+.canvas-modal-host.rebounding .graph-node .node-core {
+  filter: none;
+  transition: none;
 }
 
 .node-core {
