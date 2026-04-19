@@ -15,12 +15,6 @@ jobs:
   deploy:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    env:
-      APP_ROOT: /www/wwwroot/Smart-Note
-      BACKEND_DIR: /www/wwwroot/Smart-Note/backend
-      FRONTEND_DIR: /www/wwwroot/Smart-Note/frontend
-      FRONTEND_DEPLOY_DIR: /www/wwwroot/smartnote-web
-      SERVICE_NAME: smartnote
 
     steps:
       - name: Deploy to server over SSH
@@ -37,15 +31,15 @@ jobs:
             export JAVA_HOME=/usr/lib/jvm/java-17-openjdk
             export PATH="$JAVA_HOME/bin:$PATH"
 
-            cd "${APP_ROOT}"
+            cd /www/wwwroot/Smart-Note
             git fetch --all --prune
             git checkout main
             git pull --ff-only
 
-            cd "${BACKEND_DIR}"
+            cd /www/wwwroot/Smart-Note/backend
             mvn -B -DskipTests clean package
-            systemctl restart "${SERVICE_NAME}"
-            systemctl is-active --quiet "${SERVICE_NAME}"
+            systemctl restart smartnote
+            systemctl is-active --quiet smartnote
 
             # Wait for the application to bind its port and accept HTTP traffic.
             for i in $(seq 1 30); do
@@ -64,7 +58,7 @@ jobs:
               exit 1
             fi
 
-            cd "${FRONTEND_DIR}"
+            cd /www/wwwroot/Smart-Note/frontend
             if command -v corepack >/dev/null 2>&1; then
               corepack enable
               corepack prepare pnpm@10.17.0 --activate
@@ -75,10 +69,10 @@ jobs:
             pnpm install --frozen-lockfile
             pnpm build
 
-            mkdir -p "${FRONTEND_DEPLOY_DIR}"
+            mkdir -p /www/wwwroot/smartnote-web
             if command -v rsync >/dev/null 2>&1; then
-              rsync -a --delete dist/ "${FRONTEND_DEPLOY_DIR}/"
+              rsync -a --delete dist/ /www/wwwroot/smartnote-web/
             else
-              find "${FRONTEND_DEPLOY_DIR}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
-              cp -r dist/. "${FRONTEND_DEPLOY_DIR}/"
+              find /www/wwwroot/smartnote-web -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+              cp -r dist/. /www/wwwroot/smartnote-web/
             fi
