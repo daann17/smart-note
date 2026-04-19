@@ -74,7 +74,11 @@ public class NoteExportService {
             "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
             "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
             "/usr/share/fonts/truetype/noto/NotoSansSC-Regular.ttf",
-            "/usr/local/share/fonts/NotoSansSC-Regular.ttf"
+            "/usr/local/share/fonts/NotoSansSC-Regular.ttf",
+            "/usr/share/fonts/wqy/wqy-microhei.ttc",
+            "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf"
     );
 
     @Value("${smartnote.export.pdf-font-path:}")
@@ -753,8 +757,8 @@ public class NoteExportService {
         }
 
         String fileName = candidate.getFileName().toString().toLowerCase(Locale.ROOT);
-        if (!fileName.endsWith(".ttf")) {
-            log.warn("Skipping unsupported PDF font file (expected .ttf): {}", candidate);
+        if (!fileName.endsWith(".ttf") && !fileName.endsWith(".ttc") && !fileName.endsWith(".otf")) {
+            log.warn("Skipping unsupported PDF font file (expected .ttf/.ttc/.otf): {}", candidate);
             return false;
         }
 

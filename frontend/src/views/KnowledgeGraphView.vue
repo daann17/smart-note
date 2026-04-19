@@ -2392,7 +2392,7 @@ onBeforeUnmount(() => {
 }
 
 .graph-node {
-  transition: opacity 0.18s ease, transform 0.18s ease;
+  transition: opacity 0.18s ease;
 }
 
 .graph-node:hover .node-core {
