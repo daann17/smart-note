@@ -94,10 +94,6 @@ const adminCards = computed(() => (
           这里聚合了你的笔记、笔记本和标签规模，也为后续的整理、分享与协作提供入口。
         </p>
       </div>
-      <div class="intro-meta">
-        <span>Warm neutral UI</span>
-        <span>Focused writing flow</span>
-      </div>
     </div>
 
     <div v-if="loading" class="loading-state surface-card">
