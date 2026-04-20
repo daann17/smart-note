@@ -6,6 +6,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 @Repository
@@ -16,6 +17,8 @@ public interface NoteHistoryRepository extends JpaRepository<NoteHistory, Long> 
     NoteHistory findFirstByNoteIdOrderBySavedAtDesc(Long noteId);
 
     void deleteByNoteId(Long noteId);
+
+    void deleteBySavedAtBefore(LocalDateTime cutoffDate);
 
     @Query("""
         SELECT h.note.notebook.user.id AS userId, COUNT(h) AS total

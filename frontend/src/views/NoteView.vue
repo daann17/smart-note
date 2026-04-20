@@ -74,7 +74,7 @@ const importMimeTypes: Record<NoteImportFormat, string[]> = {
 
 const importFileInput = ref<HTMLInputElement | null>(null);
 const importFolderInput = ref<HTMLInputElement | null>(null);
-const pendingImportFormat = ref<NoteImportFormat>('markdown');
+const importFileAccept = Object.values(importAccepts).join(',');
 const folderImportAccept = Object.values(importExtensions).flat().join(',');
 
 const normalizeRouteId = (value: unknown) => {
@@ -577,16 +577,14 @@ const getRelativeFolderSegments = (file: File) => {
     .filter(Boolean);
 };
 
-const openImportPicker = (format: NoteImportFormat) => {
+const openImportPicker = () => {
   if (!notebookId.value) {
     message.warning('当前未选中笔记本，暂时无法导入');
     return;
   }
 
-  pendingImportFormat.value = format;
   if (importFileInput.value) {
     importFileInput.value.value = '';
-    importFileInput.value.accept = importAccepts[format];
     importFileInput.value.click();
   }
 };
@@ -610,17 +608,17 @@ const handleImportFileChange = async (event: Event) => {
     return;
   }
 
-  const format = pendingImportFormat.value;
-  const formatLabel = importFormatLabels[format];
-  if (!isAcceptedImportFile(file, format)) {
-    message.warning(`请选择 ${formatLabel} 格式的文件`);
+  const format = detectImportFormat(file);
+  if (!format || !isAcceptedImportFile(file, format)) {
+    message.warning('暂不支持该文件格式，请选择 TXT、Markdown、HTML、Word 或 Excel 文件');
     input.value = '';
     return;
   }
 
+  const formatLabel = importFormatLabels[format];
   const hide = message.loading(`正在导入 ${formatLabel}...`, 0);
   try {
-    const importedNote = await noteStore.importNote(notebookId.value, file, format);
+    const importedNote = await noteStore.importNote(notebookId.value, file);
     await noteStore.fetchNotes(notebookId.value);
     await handleSelectNote(importedNote.id);
     message.success(`${formatLabel} 导入成功`);
@@ -890,20 +888,8 @@ const handleDropOnFolder = async (folderId: number | null) => {
           <a-dropdown :trigger="['click']">
             <template #overlay>
               <a-menu>
-                <a-menu-item key="import-text" @click="openImportPicker('text')">
-                  <UploadOutlined /> 导入 TXT
-                </a-menu-item>
-                <a-menu-item key="import-markdown" @click="openImportPicker('markdown')">
-                  <UploadOutlined /> 导入 Markdown
-                </a-menu-item>
-                <a-menu-item key="import-html" @click="openImportPicker('html')">
-                  <UploadOutlined /> 导入 HTML
-                </a-menu-item>
-                <a-menu-item key="import-word" @click="openImportPicker('word')">
-                  <UploadOutlined /> 导入 Word
-                </a-menu-item>
-                <a-menu-item key="import-excel" @click="openImportPicker('excel')">
-                  <UploadOutlined /> 导入 Excel
+                <a-menu-item key="import-file" @click="openImportPicker">
+                  <UploadOutlined /> 导入文件
                 </a-menu-item>
                 <a-menu-divider />
                 <a-menu-item key="import-folder" @click="openImportFolderPicker">
@@ -928,6 +914,7 @@ const handleDropOnFolder = async (folderId: number | null) => {
         ref="importFileInput"
         type="file"
         style="display: none"
+        :accept="importFileAccept"
         @change="handleImportFileChange"
       />
       <input

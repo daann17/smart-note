@@ -437,7 +437,7 @@ export const useNoteStore = defineStore('note', () => {
   const importNote = async (
     notebookId: number,
     file: File,
-    format: NoteImportFormat,
+    format?: NoteImportFormat,
     folderId?: number | null,
     selectImported = true,
   ) => {
@@ -448,7 +448,7 @@ export const useNoteStore = defineStore('note', () => {
       const response = await api.post('/notes/import', formData, {
         params: {
           notebookId,
-          format,
+          ...(format ? { format } : {}),
           ...(folderId != null ? { folderId } : {}),
         },
         headers: {
@@ -463,7 +463,7 @@ export const useNoteStore = defineStore('note', () => {
       }
       return importedNote;
     } catch (error) {
-      console.error(`Failed to import note as ${format}`, error);
+      console.error(`Failed to import note${format ? ` as ${format}` : ''}`, error);
       throw error;
     }
   };

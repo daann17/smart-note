@@ -39,6 +39,8 @@ import java.util.Set;
 @Service
 public class NoteService {
 
+    private static final int HISTORY_RETENTION_DAYS = 30;
+
     @Autowired
     private NoteRepository noteRepository;
 
@@ -445,5 +447,16 @@ public class NoteService {
         for (Note note : expiredNotes) {
             hardDeleteNote(note.getId());
         }
+    }
+
+    /**
+     * 定时任务：清理 30 天前的历史版本
+     * 每天凌晨 3 点执行
+     */
+    @Scheduled(cron = "0 0 3 * * ?")
+    @Transactional
+    public void cleanupExpiredNoteHistories() {
+        LocalDateTime cutoffDate = LocalDateTime.now().minusDays(HISTORY_RETENTION_DAYS);
+        noteHistoryRepository.deleteBySavedAtBefore(cutoffDate);
     }
 }
