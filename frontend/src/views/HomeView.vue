@@ -362,6 +362,24 @@ const resetSearchFilters = async () => {
   await applySearchFilters();
 };
 
+// 防止鼠标首次聚焦搜索框时与 Popover 的点击触发发生竞争，导致 Popover 无法闪烁。
+let suppressSearchFocusOpen = false;
+let searchFocusGuardTimer: ReturnType<typeof setTimeout> | null = null;
+
+const markSearchFocusFromPointer = () => {
+  suppressSearchFocusOpen = true;
+  if (searchFocusGuardTimer) clearTimeout(searchFocusGuardTimer);
+  searchFocusGuardTimer = setTimeout(() => {
+    suppressSearchFocusOpen = false;
+    searchFocusGuardTimer = null;
+  }, 0);
+};
+
+const handleSearchFocus = () => {
+  if (suppressSearchFocusOpen) return;
+  isSearching.value = true;
+};
+
 const onSearchInput = () => {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => {
@@ -472,6 +490,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (searchTimer) clearTimeout(searchTimer);
+  if (searchFocusGuardTimer) clearTimeout(searchFocusGuardTimer);
 });
 </script>
 
@@ -664,7 +683,8 @@ onUnmounted(() => {
                 v-model:value="searchQuery"
                 placeholder="搜索知识库..."
                 style="width: 340px"
-                @focus="isSearching = true"
+                @pointerdown="markSearchFocusFromPointer"
+                @focus="handleSearchFocus"
                 @input="onSearchInput"
               >
                 <template #prefix><SearchOutlined style="color: rgba(0, 0, 0, 0.25)" /></template>

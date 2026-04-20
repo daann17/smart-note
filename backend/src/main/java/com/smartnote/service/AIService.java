@@ -58,6 +58,42 @@ public class AIService {
             "什么", "有没有", "是否", "这个", "那个", "这里", "那里", "知识库", "笔记", "内容", "整理",
             "总结", "说明", "解释", "介绍", "分析", "告诉", "帮忙", "问题", "问答", "相关", "当前", "里面"
     );
+    private static final List<String> KNOWLEDGE_OVERVIEW_HINTS = List.of(
+            "知识库里有啥",
+            "知识库里有什么",
+            "知识库有什么",
+            "我的知识库",
+            "我的笔记",
+            "有哪些笔记",
+            "有哪些内容",
+            "都有哪些",
+            "都写了什么",
+            "最近写了什么",
+            "最近记了什么",
+            "笔记里有什么",
+            "笔记都有什么"
+    );
+    private static final List<String> CROSS_NOTE_HINTS = List.of(
+            "知识库",
+            "其他笔记",
+            "其它笔记",
+            "相关笔记",
+            "类似笔记",
+            "参考笔记",
+            "关联笔记",
+            "结合其他笔记",
+            "结合知识库",
+            "和别的笔记",
+            "全局",
+            "相关内容",
+            "类似内容",
+            "有没有别的",
+            "有没有相关",
+            "对比",
+            "联系",
+            "延伸",
+            "补充"
+    );
 
     private final ChatClient chatClient;
     private final WebClient aiWebClient;
@@ -244,7 +280,14 @@ public class AIService {
             String message,
             List<AIChatMessageRequest> history
     ) {
+        if (currentNote != null && !shouldRetrieveRelatedNotes(message)) {
+            return List.of();
+        }
+
         LinkedHashSet<String> queries = new LinkedHashSet<>();
+        if (currentNote != null) {
+            queries.addAll(extractQueriesFromNoteContext(currentNote));
+        }
         queries.addAll(extractHeuristicQueries(message));
         queries.addAll(extractHeuristicQueriesFromHistory(history));
         queries.addAll(generateSearchQueriesWithAi(message, history));
@@ -274,13 +317,27 @@ public class AIService {
             }
         }
 
-        return candidates.values().stream()
+        List<Note> rankedNotes = candidates.values().stream()
+                .filter((candidate) -> currentNote == null || isRelatedToCurrentNote(currentNote, candidate.note))
                 .sorted(Comparator
                         .comparingInt(RetrievalCandidate::score).reversed()
                         .thenComparing((candidate) -> candidate.note.getUpdatedAt(), Comparator.nullsLast(Comparator.reverseOrder())))
                 .limit(MAX_RELATED_NOTES)
                 .map((candidate) -> candidate.note)
                 .toList();
+
+        if (!rankedNotes.isEmpty()) {
+            return rankedNotes;
+        }
+
+        if (isKnowledgeOverviewIntent(message)) {
+            return noteRepository.findTop10ByNotebookUserIdAndStatusNotOrderByUpdatedAtDesc(userId, "TRASH").stream()
+                    .filter((note) -> currentNote == null || !Objects.equals(currentNote.getId(), note.getId()))
+                    .limit(MAX_RELATED_NOTES)
+                    .toList();
+        }
+
+        return List.of();
     }
 
     private List<String> extractHeuristicQueriesFromHistory(List<AIChatMessageRequest> history) {
@@ -350,6 +407,42 @@ public class AIService {
             result = result.replace(stopTerm, " ");
         }
         return result.replaceAll("\\s+", "").trim();
+    }
+
+    private boolean isKnowledgeOverviewIntent(String message) {
+        String normalized = normalizeOptionalText(message).replaceAll("\\s+", "");
+        if (normalized.isBlank()) {
+            return false;
+        }
+
+        return KNOWLEDGE_OVERVIEW_HINTS.stream().anyMatch(normalized::contains);
+    }
+
+    private boolean shouldRetrieveRelatedNotes(String message) {
+        String normalized = normalizeOptionalText(message).replaceAll("\\s+", "");
+        if (normalized.isBlank()) {
+            return false;
+        }
+
+        return CROSS_NOTE_HINTS.stream().anyMatch(normalized::contains);
+    }
+
+    private List<String> extractQueriesFromNoteContext(Note note) {
+        LinkedHashSet<String> queries = new LinkedHashSet<>();
+        queries.addAll(extractHeuristicQueries(defaultTitle(note)));
+        queries.addAll(extractHeuristicQueries(clipText(buildNoteSnippet(note), 240)));
+        return queries.stream().limit(8).toList();
+    }
+
+    private boolean isRelatedToCurrentNote(Note currentNote, Note candidateNote) {
+        Set<String> currentTokens = new LinkedHashSet<>(extractQueriesFromNoteContext(currentNote));
+        if (currentTokens.isEmpty()) {
+            return false;
+        }
+
+        Set<String> candidateTokens = new LinkedHashSet<>(extractQueriesFromNoteContext(candidateNote));
+        candidateTokens.retainAll(currentTokens);
+        return !candidateTokens.isEmpty();
     }
 
     private List<String> generateSearchQueriesWithAi(String message, List<AIChatMessageRequest> history) {
@@ -605,6 +698,15 @@ public class AIService {
                         .append(clipText(buildNoteSnippet(note), MAX_NOTE_EXCERPT_LENGTH))
                         .append("\n\n");
             }
+        } else {
+            builder.append("""
+
+                    【知识库检索结果】
+                    本次未检索到可直接引用的相关笔记。
+                    如果当前也没有提供“当前笔记上下文”，就必须明确说明“笔记中没有足够信息”。
+                    不要根据用户的泛化提问去猜测知识库里有哪些笔记、主题、数量、时间或结论。
+                    如果用户是在问“知识库里有什么/有哪些笔记/最近写了什么”，只能基于明确给出的笔记内容回答；否则请直接说明未检索到相关笔记，并建议用户提供关键词、打开具体笔记，或让我列出最近更新的真实笔记。
+                    """);
         }
 
         return builder.toString();

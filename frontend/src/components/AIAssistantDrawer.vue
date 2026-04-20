@@ -15,7 +15,7 @@
     </template>
 
     <div class="chat-container">
-      <div ref="messagesContainer" class="chat-messages">
+      <div ref="messagesContainer" class="chat-messages" @scroll="handleMessagesScroll">
         <div v-if="messages.length <= 1" class="quick-prompts">
           <div class="quick-prompts-title">你可以这样问</div>
           <div class="quick-prompt-list">
@@ -34,6 +34,7 @@
         <div
           v-for="(msg, index) in messages"
           :key="`${contextStorageKey}-${index}`"
+          v-show="shouldRenderMessage(msg)"
           :class="['message-wrapper', msg.role === 'user' ? 'message-user' : 'message-ai']"
         >
           <div class="message-bubble">
@@ -147,6 +148,9 @@ const showTypingIndicator = ref(false);
 const activeRequestController = ref<AbortController | null>(null);
 const isStopRequested = ref(false);
 const messagesContainer = ref<HTMLElement | null>(null);
+const shouldAutoScroll = ref(true);
+
+const AUTO_SCROLL_THRESHOLD = 56;
 
 const contextStorageKey = computed(() => (
   props.currentNoteId ? `smartnote:ai-chat:note-${props.currentNoteId}` : 'smartnote:ai-chat:global'
@@ -286,11 +290,33 @@ const stopStreamingResponse = () => {
   activeRequestController.value?.abort();
 };
 
-const scrollToBottom = async () => {
-  await nextTick();
-  if (messagesContainer.value) {
-    messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight;
+const isNearBottom = (element: HTMLElement) => (
+  element.scrollHeight - element.scrollTop - element.clientHeight <= AUTO_SCROLL_THRESHOLD
+);
+
+const handleMessagesScroll = () => {
+  const container = messagesContainer.value;
+  if (!container) {
+    return;
   }
+  shouldAutoScroll.value = isNearBottom(container);
+};
+
+const scrollToBottom = async (force = false) => {
+  await nextTick();
+  const container = messagesContainer.value;
+  if (!container) {
+    return;
+  }
+
+  if (!force && !shouldAutoScroll.value) {
+    return;
+  }
+
+  container.scrollTo({
+    top: container.scrollHeight,
+    behavior: force ? 'auto' : 'smooth',
+  });
 };
 
 const buildHistoryPayload = (): ChatHistoryPayload[] => (
@@ -364,8 +390,14 @@ const setMessageSources = (targetIndex: number, sources: ChatSource[]) => {
     ...currentMessage,
     sources,
   };
-  return false;
+  return sources.length > 0;
 };
+
+const shouldRenderMessage = (msg: ChatMessage) => (
+  msg.role === 'user'
+  || Boolean(msg.content.trim())
+  || Boolean(msg.sources?.length)
+);
 
 const appendSseChunk = (targetIndex: number, rawEvent: string) => {
   const { event, payload } = parseSseEvent(rawEvent);
@@ -480,8 +512,9 @@ const handleSend = async () => {
   isStopRequested.value = false;
   const requestController = new AbortController();
   activeRequestController.value = requestController;
+  shouldAutoScroll.value = true;
   persistMessages();
-  await scrollToBottom();
+  await scrollToBottom(true);
 
   try {
     const response = await fetch('/api/ai/chat', {
@@ -551,7 +584,7 @@ const handleSend = async () => {
     }
     isStopRequested.value = false;
     persistMessages();
-    await scrollToBottom();
+    await scrollToBottom(true);
   }
 };
 
@@ -564,7 +597,8 @@ watch(
   () => {
     stopStreamingResponse();
     loadMessages();
-    void scrollToBottom();
+    shouldAutoScroll.value = true;
+    void scrollToBottom(true);
   },
   { immediate: true },
 );
@@ -578,7 +612,8 @@ watch(
     }
 
     loadMessages();
-    void scrollToBottom();
+    shouldAutoScroll.value = true;
+    void scrollToBottom(true);
   },
 );
 </script>
@@ -596,6 +631,7 @@ watch(
 .chat-messages {
   flex: 1;
   overflow-y: auto;
+  scroll-behavior: smooth;
   padding: 18px;
   display: flex;
   flex-direction: column;
