@@ -3,8 +3,10 @@ package com.smartnote.controller;
 import com.smartnote.dto.AuthResponse;
 import com.smartnote.dto.LoginRequest;
 import com.smartnote.dto.RegisterRequest;
+import com.smartnote.dto.SendRegisterCodeRequest;
 import com.smartnote.entity.User;
 import com.smartnote.repository.UserRepository;
+import com.smartnote.service.RegisterEmailVerificationService;
 import com.smartnote.util.JwtUtil;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -31,6 +33,9 @@ public class AuthController {
 
     @Autowired
     private JwtUtil jwtUtil;
+
+    @Autowired
+    private RegisterEmailVerificationService registerEmailVerificationService;
 
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody LoginRequest loginRequest) {
@@ -60,6 +65,15 @@ public class AuthController {
             return ResponseEntity.badRequest().body("Error: Email is already in use!");
         }
 
+        try {
+            registerEmailVerificationService.verifyCode(
+                    registerRequest.getEmail(),
+                    registerRequest.getVerificationCode()
+            );
+        } catch (IllegalArgumentException exception) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("message", exception.getMessage()));
+        }
+
         User user = new User();
         user.setUsername(registerRequest.getUsername());
         user.setEmail(registerRequest.getEmail());
@@ -72,6 +86,20 @@ public class AuthController {
         userRepository.save(user);
 
         return ResponseEntity.ok("User registered successfully!");
+    }
+
+    @PostMapping("/register/code")
+    public ResponseEntity<?> sendRegisterCode(@RequestBody SendRegisterCodeRequest request) {
+        try {
+            registerEmailVerificationService.sendCode(request.getEmail());
+            return ResponseEntity.ok(java.util.Map.of("message", "验证码已发送，请注意查收邮箱"));
+        } catch (IllegalArgumentException exception) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("message", exception.getMessage()));
+        } catch (IllegalStateException exception) {
+            return ResponseEntity.status(503).body(java.util.Map.of("message", exception.getMessage()));
+        } catch (RuntimeException exception) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("message", exception.getMessage()));
+        }
     }
 
     private String resolveDisplayName(User user) {

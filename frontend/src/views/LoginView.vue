@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue';
+import { computed, onUnmounted, reactive, ref } from 'vue';
 import { UserOutlined, LockOutlined, MailOutlined } from '@ant-design/icons-vue';
 import { message } from 'ant-design-vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -11,18 +11,28 @@ type AuthMode = 'login' | 'register';
 const router = useRouter();
 const route = useRoute();
 const loading = ref(false);
+const sendCodeLoading = ref(false);
+const resendCountdown = ref(0);
 const activeTab = ref<AuthMode>('login');
 const formState = reactive({
   username: '',
   password: '',
   email: '',
+  verificationCode: '',
 });
+let resendTimer: ReturnType<typeof setInterval> | null = null;
 
 const authApi = axios.create({
   baseURL: '/api',
 });
 
 const isLogin = computed(() => activeTab.value === 'login');
+const canSendCode = computed(() => (
+  !isLogin.value
+  && !sendCodeLoading.value
+  && resendCountdown.value <= 0
+  && /^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$/.test(formState.email.trim())
+));
 const redirectTarget = computed(() => {
   const redirect = route.query.redirect;
   return typeof redirect === 'string' && redirect.startsWith('/') ? redirect : '/home';
@@ -55,11 +65,13 @@ const handleFinish = async (values: typeof formState) => {
       username: values.username,
       password: values.password,
       email: values.email,
+      verificationCode: values.verificationCode,
     });
 
     message.success('注册成功，请登录');
     activeTab.value = 'login';
     formState.password = '';
+    formState.verificationCode = '';
   } catch (error: any) {
     console.error('Auth error:', error);
     message.error(error.response?.data?.message || error.response?.data || '操作失败');
@@ -72,12 +84,61 @@ const handleFinishFailed = (errors: unknown) => {
   console.log('Failed:', errors);
 };
 
+const startResendCountdown = (seconds: number) => {
+  resendCountdown.value = seconds;
+  if (resendTimer) {
+    clearInterval(resendTimer);
+  }
+  resendTimer = setInterval(() => {
+    if (resendCountdown.value <= 1) {
+      resendCountdown.value = 0;
+      if (resendTimer) {
+        clearInterval(resendTimer);
+        resendTimer = null;
+      }
+      return;
+    }
+    resendCountdown.value -= 1;
+  }, 1000);
+};
+
+const handleSendVerificationCode = async () => {
+  const email = formState.email.trim();
+  if (!/^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$/.test(email)) {
+    message.warning('请先输入有效邮箱地址');
+    return;
+  }
+
+  sendCodeLoading.value = true;
+  try {
+    const response = await authApi.post('/auth/register/code', { email });
+    message.success(response.data?.message || '验证码已发送');
+    startResendCountdown(60);
+  } catch (error: any) {
+    message.error(error.response?.data?.message || error.response?.data || '验证码发送失败');
+  } finally {
+    sendCodeLoading.value = false;
+  }
+};
+
 const toggleMode = () => {
   activeTab.value = isLogin.value ? 'register' : 'login';
   formState.username = '';
   formState.password = '';
   formState.email = '';
+  formState.verificationCode = '';
+  resendCountdown.value = 0;
+  if (resendTimer) {
+    clearInterval(resendTimer);
+    resendTimer = null;
+  }
 };
+
+onUnmounted(() => {
+  if (resendTimer) {
+    clearInterval(resendTimer);
+  }
+});
 </script>
 
 <template>
@@ -162,6 +223,26 @@ const toggleMode = () => {
             <a-input-password v-model:value="formState.password" placeholder="请输入密码" size="large">
               <template #prefix><LockOutlined /></template>
             </a-input-password>
+          </a-form-item>
+
+          <a-form-item
+            v-if="!isLogin"
+            label="验证码"
+            name="verificationCode"
+            :rules="[{ required: true, message: '请输入邮箱验证码' }]"
+          >
+            <div class="verify-code-row">
+              <a-input v-model:value="formState.verificationCode" placeholder="请输入 6 位验证码" size="large" />
+              <a-button
+                html-type="button"
+                size="large"
+                :loading="sendCodeLoading"
+                :disabled="!canSendCode"
+                @click="handleSendVerificationCode"
+              >
+                {{ resendCountdown > 0 ? `${resendCountdown}s 后重发` : '发送验证码' }}
+              </a-button>
+            </div>
           </a-form-item>
 
           <a-form-item class="submit-row">
@@ -356,6 +437,12 @@ const toggleMode = () => {
   font-weight: 600;
 }
 
+.verify-code-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+}
+
 @media (max-width: 1080px) {
   .auth-shell {
     grid-template-columns: 1fr;
@@ -379,6 +466,10 @@ const toggleMode = () => {
   .panel-head {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .verify-code-row {
+    grid-template-columns: 1fr;
   }
 }
 </style>
