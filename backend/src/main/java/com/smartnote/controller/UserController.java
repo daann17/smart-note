@@ -1,10 +1,12 @@
 package com.smartnote.controller;
 
+import com.smartnote.dto.DeleteCurrentUserRequest;
 import com.smartnote.dto.UpdateUserProfileRequest;
 import com.smartnote.dto.UserProfileResponse;
 import com.smartnote.service.UserProfileService;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -35,6 +37,19 @@ public class UserController {
     ) {
         try {
             return ResponseEntity.ok(userProfileService.updateCurrentUserProfile(authentication.getName(), request));
+        } catch (IllegalArgumentException exception) {
+            return ResponseEntity.badRequest().body(Map.of("message", exception.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/me")
+    public ResponseEntity<?> deleteCurrentUser(
+            Authentication authentication,
+            @RequestBody DeleteCurrentUserRequest request
+    ) {
+        try {
+            userProfileService.deleteCurrentUserAccount(authentication.getName(), request);
+            return ResponseEntity.ok(Map.of("message", "账号已注销"));
         } catch (IllegalArgumentException exception) {
             return ResponseEntity.badRequest().body(Map.of("message", exception.getMessage()));
         }

@@ -102,6 +102,10 @@ const aiDrawerVisible = ref(false);
 const profileModalVisible = ref(false);
 const profileLoading = ref(false);
 const profileSaving = ref(false);
+const deleteAccountModalVisible = ref(false);
+const deletingAccount = ref(false);
+const deleteAccountConfirmation = ref('');
+const DELETE_ACCOUNT_CONFIRM_TEXT = '我确认注销账号';
 const profileForm = reactive<UserProfile>({
   username: localStorage.getItem('username') || '',
   email: '',
@@ -320,6 +324,31 @@ const handleSaveProfile = async () => {
     message.error(error.response?.data?.message || '个人信息更新失败');
   } finally {
     profileSaving.value = false;
+  }
+};
+
+const openDeleteAccountModal = () => {
+  deleteAccountConfirmation.value = '';
+  deleteAccountModalVisible.value = true;
+};
+
+const handleDeleteAccount = async () => {
+  deletingAccount.value = true;
+  try {
+    await api.delete('/users/me', {
+      data: {
+        confirmationText: deleteAccountConfirmation.value,
+      },
+    });
+    deleteAccountModalVisible.value = false;
+    profileModalVisible.value = false;
+    clearSession();
+    message.success('账号已注销');
+    router.push('/');
+  } catch (error) {
+    console.error('Failed to delete account:', error);
+  } finally {
+    deletingAccount.value = false;
   }
 };
 
@@ -823,7 +852,34 @@ onUnmounted(() => {
             />
           </a-form-item>
         </a-form>
+        <a-divider>账号操作</a-divider>
+        <div class="danger-zone">
+          <div class="danger-zone__content">
+            <strong>注销账号</strong>
+            <p>注销后会同时删除你的笔记、历史版本、分享和个人资料，且无法恢复。</p>
+          </div>
+          <a-button danger @click="openDeleteAccountModal">注销账号</a-button>
+        </div>
       </a-spin>
+    </a-modal>
+
+    <a-modal
+      v-model:open="deleteAccountModalVisible"
+      title="确认注销账号"
+      ok-text="确认注销"
+      cancel-text="取消"
+      :confirm-loading="deletingAccount"
+      :ok-button-props="{ danger: true, disabled: deleteAccountConfirmation.trim() !== DELETE_ACCOUNT_CONFIRM_TEXT }"
+      @ok="handleDeleteAccount"
+    >
+      <p class="delete-account-tip">
+        这是不可恢复的操作。请输入 <strong>{{ DELETE_ACCOUNT_CONFIRM_TEXT }}</strong> 继续。
+      </p>
+      <a-input
+        v-model:value="deleteAccountConfirmation"
+        :maxlength="20"
+        placeholder="我确认注销账号"
+      />
     </a-modal>
 
     <AIAssistantDrawer v-model:visible="aiDrawerVisible" />
@@ -1130,6 +1186,30 @@ onUnmounted(() => {
   flex: 1;
 }
 
+.danger-zone {
+  padding: 16px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 77, 79, 0.2);
+  background: #fff7f7;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.danger-zone__content strong {
+  display: block;
+  color: #a61d24;
+  font-size: 15px;
+}
+
+.danger-zone__content p,
+.delete-account-tip {
+  margin: 8px 0 0;
+  color: #615d59;
+  line-height: 1.7;
+}
+
 .notebook-more-btn {
   visibility: hidden;
   color: #615d59;
@@ -1182,6 +1262,11 @@ onUnmounted(() => {
 
   .recent-card {
     padding: 22px 18px;
+  }
+
+  .danger-zone {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 </style>

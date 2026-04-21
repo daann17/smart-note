@@ -3,9 +3,12 @@ package com.smartnote.controller;
 import com.smartnote.dto.AuthResponse;
 import com.smartnote.dto.LoginRequest;
 import com.smartnote.dto.RegisterRequest;
+import com.smartnote.dto.ResetPasswordRequest;
+import com.smartnote.dto.SendPasswordResetCodeRequest;
 import com.smartnote.dto.SendRegisterCodeRequest;
 import com.smartnote.entity.User;
 import com.smartnote.repository.UserRepository;
+import com.smartnote.service.PasswordResetService;
 import com.smartnote.service.RegisterEmailVerificationService;
 import com.smartnote.util.JwtUtil;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,6 +40,9 @@ public class AuthController {
     @Autowired
     private RegisterEmailVerificationService registerEmailVerificationService;
 
+    @Autowired
+    private PasswordResetService passwordResetService;
+
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody LoginRequest loginRequest) {
         try {
@@ -57,17 +63,24 @@ public class AuthController {
 
     @PostMapping("/register")
     public ResponseEntity<?> register(@RequestBody RegisterRequest registerRequest) {
+        String normalizedEmail;
+        try {
+            normalizedEmail = registerEmailVerificationService.normalizeEmailForStorage(registerRequest.getEmail());
+        } catch (IllegalArgumentException exception) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("message", exception.getMessage()));
+        }
+
         if (userRepository.existsByUsername(registerRequest.getUsername())) {
             return ResponseEntity.badRequest().body("Error: Username is already taken!");
         }
 
-        if (userRepository.existsByEmail(registerRequest.getEmail())) {
+        if (userRepository.existsByEmail(normalizedEmail)) {
             return ResponseEntity.badRequest().body("Error: Email is already in use!");
         }
 
         try {
             registerEmailVerificationService.verifyCode(
-                    registerRequest.getEmail(),
+                    normalizedEmail,
                     registerRequest.getVerificationCode()
             );
         } catch (IllegalArgumentException exception) {
@@ -76,7 +89,7 @@ public class AuthController {
 
         User user = new User();
         user.setUsername(registerRequest.getUsername());
-        user.setEmail(registerRequest.getEmail());
+        user.setEmail(normalizedEmail);
         user.setPassword(passwordEncoder.encode(registerRequest.getPassword()));
         user.setNickname(registerRequest.getUsername());
         user.setRole("USER");
@@ -98,6 +111,30 @@ public class AuthController {
         } catch (IllegalStateException exception) {
             return ResponseEntity.status(503).body(java.util.Map.of("message", exception.getMessage()));
         } catch (RuntimeException exception) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("message", exception.getMessage()));
+        }
+    }
+
+    @PostMapping("/password-reset/code")
+    public ResponseEntity<?> sendPasswordResetCode(@RequestBody SendPasswordResetCodeRequest request) {
+        try {
+            passwordResetService.sendResetCode(request.getEmail());
+            return ResponseEntity.ok(java.util.Map.of("message", "验证码已发送，请注意查收邮箱"));
+        } catch (IllegalArgumentException exception) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("message", exception.getMessage()));
+        } catch (IllegalStateException exception) {
+            return ResponseEntity.status(503).body(java.util.Map.of("message", exception.getMessage()));
+        } catch (RuntimeException exception) {
+            return ResponseEntity.badRequest().body(java.util.Map.of("message", exception.getMessage()));
+        }
+    }
+
+    @PostMapping("/password-reset")
+    public ResponseEntity<?> resetPassword(@RequestBody ResetPasswordRequest request) {
+        try {
+            passwordResetService.resetPassword(request);
+            return ResponseEntity.ok(java.util.Map.of("message", "密码已重置，请使用新密码登录"));
+        } catch (IllegalArgumentException exception) {
             return ResponseEntity.badRequest().body(java.util.Map.of("message", exception.getMessage()));
         }
     }

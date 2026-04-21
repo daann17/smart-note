@@ -13,6 +13,7 @@ import java.util.Optional;
 @Repository
 public interface NoteShareRepository extends JpaRepository<NoteShare, Long> {
     Optional<NoteShare> findByNoteId(Long noteId);
+    List<NoteShare> findAllByNoteId(Long noteId);
     Optional<NoteShare> findByToken(String token);
 
     @Query("""

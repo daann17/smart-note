@@ -20,6 +20,8 @@ public interface NotebookRepository extends JpaRepository<Notebook, Long> {
      */
     List<Notebook> findByUserIdAndStatusNotOrderByCreatedAtDesc(Long userId, String status);
 
+    List<Notebook> findByUserIdOrderByCreatedAtDesc(Long userId);
+
     long countByUserIdAndStatusNot(Long userId, String status);
 
     long countByStatusNot(String status);

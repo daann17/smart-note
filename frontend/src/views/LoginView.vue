@@ -13,14 +13,27 @@ const route = useRoute();
 const loading = ref(false);
 const sendCodeLoading = ref(false);
 const resendCountdown = ref(0);
+const resetModalVisible = ref(false);
+const resetLoading = ref(false);
+const resetSendCodeLoading = ref(false);
+const resetResendCountdown = ref(0);
 const activeTab = ref<AuthMode>('login');
+
 const formState = reactive({
   username: '',
   password: '',
   email: '',
   verificationCode: '',
 });
+
+const resetFormState = reactive({
+  email: '',
+  verificationCode: '',
+  newPassword: '',
+});
+
 let resendTimer: ReturnType<typeof setInterval> | null = null;
+let resetResendTimer: ReturnType<typeof setInterval> | null = null;
 
 const authApi = axios.create({
   baseURL: '/api',
@@ -32,6 +45,11 @@ const canSendCode = computed(() => (
   && !sendCodeLoading.value
   && resendCountdown.value <= 0
   && /^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$/.test(formState.email.trim())
+));
+const canSendResetCode = computed(() => (
+  !resetSendCodeLoading.value
+  && resetResendCountdown.value <= 0
+  && /^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$/.test(resetFormState.email.trim())
 ));
 const redirectTarget = computed(() => {
   const redirect = route.query.redirect;
@@ -102,6 +120,24 @@ const startResendCountdown = (seconds: number) => {
   }, 1000);
 };
 
+const startResetResendCountdown = (seconds: number) => {
+  resetResendCountdown.value = seconds;
+  if (resetResendTimer) {
+    clearInterval(resetResendTimer);
+  }
+  resetResendTimer = setInterval(() => {
+    if (resetResendCountdown.value <= 1) {
+      resetResendCountdown.value = 0;
+      if (resetResendTimer) {
+        clearInterval(resetResendTimer);
+        resetResendTimer = null;
+      }
+      return;
+    }
+    resetResendCountdown.value -= 1;
+  }, 1000);
+};
+
 const handleSendVerificationCode = async () => {
   const email = formState.email.trim();
   if (!/^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$/.test(email)) {
@@ -121,6 +157,51 @@ const handleSendVerificationCode = async () => {
   }
 };
 
+const openResetModal = () => {
+  resetModalVisible.value = true;
+  resetFormState.email = formState.email.trim();
+  resetFormState.verificationCode = '';
+  resetFormState.newPassword = '';
+};
+
+const handleSendResetCode = async () => {
+  const email = resetFormState.email.trim();
+  if (!/^[A-Za-z0-9+_.-]+@[A-Za-z0-9.-]+$/.test(email)) {
+    message.warning('请先输入有效邮箱地址');
+    return;
+  }
+
+  resetSendCodeLoading.value = true;
+  try {
+    const response = await authApi.post('/auth/password-reset/code', { email });
+    message.success(response.data?.message || '验证码已发送');
+    startResetResendCountdown(60);
+  } catch (error: any) {
+    message.error(error.response?.data?.message || error.response?.data || '验证码发送失败');
+  } finally {
+    resetSendCodeLoading.value = false;
+  }
+};
+
+const handleResetPassword = async () => {
+  resetLoading.value = true;
+  try {
+    const response = await authApi.post('/auth/password-reset', {
+      email: resetFormState.email,
+      verificationCode: resetFormState.verificationCode,
+      newPassword: resetFormState.newPassword,
+    });
+    message.success(response.data?.message || '密码已重置');
+    resetModalVisible.value = false;
+    activeTab.value = 'login';
+    formState.password = '';
+  } catch (error: any) {
+    message.error(error.response?.data?.message || error.response?.data || '密码重置失败');
+  } finally {
+    resetLoading.value = false;
+  }
+};
+
 const toggleMode = () => {
   activeTab.value = isLogin.value ? 'register' : 'login';
   formState.username = '';
@@ -137,6 +218,9 @@ const toggleMode = () => {
 onUnmounted(() => {
   if (resendTimer) {
     clearInterval(resendTimer);
+  }
+  if (resetResendTimer) {
+    clearInterval(resetResendTimer);
   }
 });
 </script>
@@ -252,12 +336,54 @@ onUnmounted(() => {
           </a-form-item>
         </a-form>
 
+        <div v-if="isLogin" class="password-actions">
+          <a @click.prevent="openResetModal">忘记密码？</a>
+        </div>
+
         <div class="auth-footer">
           <span>{{ isLogin ? '还没有账号？' : '已经有账号？' }}</span>
           <a @click.prevent="toggleMode">{{ isLogin ? '立即注册' : '直接登录' }}</a>
         </div>
       </section>
     </div>
+
+    <a-modal
+      v-model:open="resetModalVisible"
+      title="通过邮箱重置密码"
+      ok-text="重置密码"
+      cancel-text="取消"
+      :confirm-loading="resetLoading"
+      @ok="handleResetPassword"
+    >
+      <a-form :model="resetFormState" layout="vertical">
+        <a-form-item label="邮箱">
+          <a-input v-model:value="resetFormState.email" placeholder="请输入邮箱" size="large">
+            <template #prefix><MailOutlined /></template>
+          </a-input>
+        </a-form-item>
+
+        <a-form-item label="验证码">
+          <div class="verify-code-row">
+            <a-input v-model:value="resetFormState.verificationCode" placeholder="请输入 6 位验证码" size="large" />
+            <a-button
+              html-type="button"
+              size="large"
+              :loading="resetSendCodeLoading"
+              :disabled="!canSendResetCode"
+              @click="handleSendResetCode"
+            >
+              {{ resetResendCountdown > 0 ? `${resetResendCountdown}s 后重发` : '发送验证码' }}
+            </a-button>
+          </div>
+        </a-form-item>
+
+        <a-form-item label="新密码">
+          <a-input-password v-model:value="resetFormState.newPassword" placeholder="请输入新密码" size="large">
+            <template #prefix><LockOutlined /></template>
+          </a-input-password>
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </div>
 </template>
 
@@ -423,6 +549,12 @@ onUnmounted(() => {
   margin-bottom: 0;
 }
 
+.password-actions {
+  margin-top: 14px;
+  text-align: right;
+  font-size: 14px;
+}
+
 .auth-footer {
   margin-top: 18px;
   display: flex;
@@ -433,7 +565,8 @@ onUnmounted(() => {
   font-size: 14px;
 }
 
-.auth-footer a {
+.auth-footer a,
+.password-actions a {
   font-weight: 600;
 }
 
